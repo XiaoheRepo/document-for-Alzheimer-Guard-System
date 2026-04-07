@@ -1106,6 +1106,9 @@ SLO 建议：
 | id | bigint | PK | 主键 |
 | module | varchar(64) | not null | 模块 |
 | action | varchar(64) | not null | 动作 |
+| action_id | varchar(64) | null | Agent 执行动作 ID（执行回执） |
+| result_code | varchar(64) | null | 执行结果码（OK/业务码） |
+| executed_at | timestamptz | null | 动作执行完成时间 |
 | operator_user_id | bigint | null | 操作人 ID |
 | operator_username | varchar(64) | not null | 操作账号快照 |
 | object_id | varchar(64) | null | 对象 |
@@ -1120,6 +1123,10 @@ SLO 建议：
 | request_id | varchar(64) | null | 幂等键 |
 | trace_id | varchar(64) | not null | 链路标识 |
 | created_at | timestamptz | not null | 时间 |
+
+执行回执落库约束：
+1. 当 `action_source='AI_AGENT'` 且动作执行完成时，必须落库 `action_id/result_code/executed_at`。
+2. 当命中策略阻断（如 `POLICY_BLOCK`）时，`result_code` 必须落库；`executed_at` 可空。
 
 ### 5.12 sys_outbox_log
 
@@ -1175,7 +1182,7 @@ SLO 建议：
 | :--- | :--- | :--- | :--- |
 | config_key | varchar(128) | PK | 白名单配置键 |
 | config_value | text | not null | 配置值（与键类型契约匹配） |
-| scope | varchar(32) | not null default 'public' | public/ops/security |
+| scope | varchar(32) | not null default 'public' | public/ops/security/ai_policy |
 | updated_by | bigint | not null | 最近更新操作人 |
 | updated_reason | varchar(256) | not null | 最近更新原因 |
 | created_at | timestamptz | not null | 创建时间 |
@@ -1184,11 +1191,25 @@ SLO 建议：
 索引：
 - idx_sys_config_scope(scope)
 
-AI 配置键白名单建议（用于模型与供应商治理）：
+AI 与 Agent 配置键白名单（用于模型/供应商/策略治理）：
 - ai.model.provider（如 alibaba-bailian）
 - ai.model.chat.primary（如 qwen-max-latest）
 - ai.model.chat.fallback（如 qwen-plus）
 - ai.model.embedding.primary（需与 vector(1024) 维度契约一致）
+- agent.capability.rescue.enabled
+- agent.capability.clue.enabled
+- agent.capability.guardian.enabled
+- agent.capability.material.enabled
+- agent.capability.ai_case.enabled
+- agent.capability.governance.enabled
+- agent.capability.outbox_reliability.enabled
+- agent.execution.max_level
+- agent.confirmation.policy
+- agent.manual_only.actions
+
+作用域约束：
+1. `agent.capability.*` 与 `agent.*policy` 键必须使用 `scope=ai_policy`。
+2. 管理端读取与修改 Agent 策略时，必须通过 `scope=ai_policy` 访问 `sys_config`。
 
 ### 5.15 notification_inbox
 
@@ -1614,7 +1635,7 @@ entry_token 载荷建议：
 
 审计字段基线：
 - operator_user_id、operator_username、object、action、result、trace_id、request_id、risk_level、detail。
-- action_source、agent_profile、execution_mode、confirm_level、blocked_reason。
+- action_source、agent_profile、execution_mode、confirm_level、blocked_reason、action_id、result_code、executed_at。
 
 ### 11.4 二维码物理制码与离线密钥管理规范（本期）
 

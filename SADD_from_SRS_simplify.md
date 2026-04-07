@@ -395,6 +395,16 @@ Agent 执行分级（架构级）：
 | GovernanceSentinel | `agent.capability.governance.enabled` |
 | OutboxReliabilityAgent | `agent.capability.outbox_reliability.enabled` |
 
+Agent 策略配置键（`sys_config.scope=ai_policy`）：
+
+| config_key | 说明 |
+| :--- | :--- |
+| `agent.execution.max_level` | 允许执行上限（A0/A1/A2/A3） |
+| `agent.confirmation.policy` | 确认级别策略映射 |
+| `agent.manual_only.actions` | 人工专属接口白名单 |
+
+说明：上述策略键与能力包开关键共同构成 `ai_policy` 作用域下的完整 Agent 治理键集。
+
 Function Calling 的 `action` 必须命中白名单，并通过现有业务接口执行（禁止内部旁路写）：
 
 | action | 目标接口 | 最低确认 | 约束 |

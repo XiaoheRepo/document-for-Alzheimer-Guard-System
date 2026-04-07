@@ -594,6 +594,9 @@ token_usage JSONB 兼容键契约（多供应商统一）：
 | id | bigint | PK | 主键 |
 | module | varchar(64) | not null | 模块 |
 | action | varchar(64) | not null | 动作 |
+| action_id | varchar(64) | null | Agent 执行动作 ID（执行回执） |
+| result_code | varchar(64) | null | 执行结果码（OK/业务码） |
+| executed_at | timestamptz | null | 动作执行完成时间 |
 | operator_user_id | bigint | null | 操作人 ID |
 | operator_username | varchar(64) | not null | 操作账号快照 |
 | object_id | varchar(64) | null | 对象 ID |
@@ -614,9 +617,14 @@ token_usage JSONB 兼容键契约（多供应商统一）：
 - idx_log_module_action_time(module, action, created_at desc)
 - idx_log_operator_time(operator_user_id, created_at desc)
 - idx_log_trace(trace_id)
+- idx_log_action_id(action_id)
 - idx_log_action_source_time(action_source, created_at desc)
 - idx_log_agent_profile_time(agent_profile, created_at desc)
 - idx_log_created_at(created_at desc)
+
+执行回执固化规则：
+1. 当 `action_source='AI_AGENT'` 且动作执行完成时，必须落库 `action_id/result_code/executed_at`。
+2. 当命中策略阻断（如 `POLICY_BLOCK`）时，`result_code` 必须落库；`executed_at` 可空。
 
 ### 4.13 sys_config（治理配置）
 
@@ -815,6 +823,7 @@ AI Agent 策略键约定：
 | 3.8.6 数据导出 | export_type/window_start/window_end/reason/file_url | sys_log | detail.export_payload/detail.export_result |
 | 3.8.8 修改配置 | config_key/config_value/reason | sys_config | config_key/config_value/updated_reason |
 | 1.11 Agent 受控执行契约 | X-Action-Source/X-Agent-Profile/X-Execution-Mode/X-Confirm-Level | sys_log | action_source/agent_profile/execution_mode/confirm_level |
+| 3.5.3 AI done 执行回执 | action_id/result_code/executed_at | sys_log | action_id/result_code/executed_at |
 | 1.11 Agent 策略阻断 | blocked_reason | sys_log | blocked_reason |
 | 1.11 Agent 能力包开关 | capability/policy 配置键 | sys_config | config_key/config_value/scope=ai_policy |
 | 3.8.11 读取配置 | scope | sys_config | scope |

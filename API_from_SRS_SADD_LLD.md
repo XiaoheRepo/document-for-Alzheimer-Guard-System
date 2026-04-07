@@ -42,7 +42,7 @@ ID 传输强制约定：
 | X-Request-Id | 写接口必填 | 长度 16-64，仅字母数字与- |
 | X-Trace-Id | 全链路必填 | 长度 16-64，禁止空值，响应必须回写 |
 | X-Action-Source | Agent 执行链路条件必填 | USER / AI_AGENT；默认 USER |
-| X-Agent-Profile | Agent 执行链路条件必填 | RescueCommander / ClueInvestigator / GovernanceSentinel 等能力包标识 |
+| X-Agent-Profile | Agent 执行链路条件必填 | RescueCommander / ClueInvestigator / GuardianCoordinator / MaterialOperator / AICaseCopilot / GovernanceSentinel / OutboxReliabilityAgent（见 9.2） |
 | X-Execution-Mode | Agent 执行链路条件必填 | AUTO / CONFIRM_1 / CONFIRM_2 / CONFIRM_3 / MANUAL_ONLY |
 | X-Confirm-Level | Agent 执行链路条件必填 | CONFIRM_1 / CONFIRM_2 / CONFIRM_3；与策略门禁匹配 |
 | Content-Type | JSON 接口必填 | application/json |
@@ -6550,7 +6550,10 @@ data.items 摘要结构：
 | model_name | string | string | 模型标识 |
 | token_used_total | int64 | string | 总消耗 token |
 | round_count | int32 | number | 对话轮数 |
+| status | string | string | ACTIVE/ARCHIVED（会话生命周期状态） |
 | updated_at | string | string | 最后活跃时间（ISO-8601） |
+
+语义说明：`status` 表示会话生命周期状态（ACTIVE/ARCHIVED），与 3.5.3 的 `stream_status`（单次消息流式过程态）解耦。
 
 错误码：E_GOV_4030、E_REQ_4005。
 
@@ -6580,6 +6583,7 @@ X-Trace-Id: trc_demo_20260406_001
                                    "model_name":  "qwen-max-latest",
                                    "token_used_total":  "1820",
                                    "round_count":  6,
+                                   "status":  "ACTIVE",
                                    "updated_at":  "2026-04-06T11:12:00Z"
                                }
                            ],
@@ -8715,7 +8719,7 @@ X-Trace-Id: trc_demo_20260406_001
 | :--- | :--- | :--- |
 | config_key | string | 已更新的配置键 |
 | config_value | string | 已更新后的配置值 |
-| scope | string | 配置作用域（public/ops/security） |
+| scope | string | 配置作用域（public/ops/security/ai_policy） |
 | updated_reason | string | 最近更新原因 |
 | updated_at | string | 更新时间（ISO-8601） |
 
@@ -8958,7 +8962,7 @@ X-Trace-Id: trc_demo_20260406_001
 
 | 字段 | 类型 | 必填 | 规则 |
 | :--- | :--- | :---: | :--- |
-| scope | string | 否 | public/ops/security（security 仅 SUPERADMIN） |
+| scope | string | 否 | public/ops/security/ai_policy（security/ai_policy 仅 SUPERADMIN） |
 
 成功响应 data：
 

@@ -380,6 +380,37 @@ Agent 执行分级（架构级）：
   - 人工专属操作被 Agent 调用 -> `E_GOV_4231`
 5. 审计要求：策略命中路径与拦截原因必须可回放。
 
+### 6.7 Agent 能力包与 Function Calling 架构对齐
+
+能力包开关（`sys_config.scope=ai_policy`）必须与 API 白名单同粒度：
+
+| agent_profile | config_key |
+| :--- | :--- |
+| RescueCommander | `agent.capability.rescue.enabled` |
+| ClueInvestigator | `agent.capability.clue.enabled` |
+| GuardianCoordinator | `agent.capability.guardian.enabled` |
+| MaterialOperator | `agent.capability.material.enabled` |
+| AICaseCopilot | `agent.capability.ai_case.enabled` |
+| GovernanceSentinel | `agent.capability.governance.enabled` |
+| OutboxReliabilityAgent | `agent.capability.outbox_reliability.enabled` |
+
+Function Calling 的 `action` 必须命中白名单，并通过现有业务接口执行（禁止内部旁路写）：
+
+| action | 目标接口 | 最低确认 | 约束 |
+| :--- | :--- | :--- | :--- |
+| `propose_close` | `POST /api/v1/rescue/tasks/{task_id}/close` | `CONFIRM_1` | 可执行 |
+| `clue_override` | `POST /api/v1/clues/{clue_id}/override` | `CONFIRM_2` | 可执行 |
+| `clue_reject` | `POST /api/v1/clues/{clue_id}/reject` | `CONFIRM_2` | 可执行 |
+| `approve_material_order` | `PUT /api/v1/admin/material/orders/{order_id}/approve` | `CONFIRM_2` | 可执行 |
+| `archive_session` | `POST /api/v1/ai/sessions/{session_id}/archive` | `CONFIRM_1` | 可执行 |
+| `replay_outbox_dead` | `POST /api/v1/admin/super/outbox/dead/{event_id}/replay` | `CONFIRM_3` | 可执行 |
+| `request_evidence` | `POST /api/v1/admin/clues/{clue_id}/request-evidence` | `MANUAL_ONLY` | 毕设版本暂不开放，仅可建议 |
+| `force_close_task` | `POST /api/v1/admin/super/rescue/tasks/{task_id}/force-close` | `MANUAL_ONLY` | A4 动作，仅人工可执行 |
+
+执行回执要求：
+1. 若 action 执行成功，必须返回 `action_id`、`result_code`、`executed_at`。
+2. 上述回执字段必须通过 AI 流式 `done` 事件透传，保证端到端可观测与可审计。
+
 ## 7. 数据与存储架构
 
 ### 7.1 概念实体基线

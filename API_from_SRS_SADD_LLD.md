@@ -191,6 +191,8 @@ Cursor 模式：
 | assignee_user_id | clue_record.assignee_user_id | 复核责任人 |
 | operator_user_id | sys_log.operator_user_id | 审计操作人 ID |
 | operator_username | sys_log.operator_username | 审计操作人快照 |
+| confirmed_at（3.3.4 ACCEPT） | sys_user_patient.transfer_confirmed_at | 主监护转移确认时间 |
+| confirmed_at（3.4.14） | tag_apply_record.closed_at | 家属签收完成时间（工单进入 COMPLETED） |
 
 ## 2. 错误码字典
 
@@ -2869,8 +2871,7 @@ X-Request-Id: req_demo_20260406_001
 Content-Type: application/json
 
 {
-    "reject_reason":  "demo",
-    "action":  "demo"
+    "action":  "ACCEPT"
 }
 ```
 
@@ -3018,8 +3019,7 @@ X-Request-Id: req_demo_20260406_001
 Content-Type: application/json
 
 {
-    "reject_reason":  "demo",
-    "action":  "demo"
+    "action":  "ACCEPT"
 }
 ```
 
@@ -3038,11 +3038,11 @@ X-Trace-Id: trc_demo_20260406_001
                  "patient_id":  "1001",
                  "from_user_id":  "2001",
                  "to_user_id":  "2002",
-                 "transfer_state":  "PENDING_CONFIRM",
+                 "transfer_state":  "ACCEPTED",
                  "reason":  "临时出差，需家属接管",
                  "requested_at":  "2026-04-06T10:00:00Z",
                  "expire_at":  "2026-04-07T10:00:00Z",
-                 "confirmed_at":  null
+                 "confirmed_at":  "2026-04-06T10:12:00Z"
              },
     "trace_id":  "trc_demo_20260406_001"
 }
@@ -3071,6 +3071,11 @@ X-Trace-Id: trc_demo_20260406_001
 | 401 | E_PRO_4011、E_PRO_4013 | 鉴权失败或凭据缺失/失效 |
 | 404 | E_PRO_4041、E_PRO_4045 | 资源不存在或不可见 |
 | 409 | E_PRO_4097、E_PRO_4099 | 状态冲突或重复提交 |
+
+落库语义：
+1. `action=ACCEPT`：`transfer_state=ACCEPTED`，`confirmed_at` 映射 `sys_user_patient.transfer_confirmed_at`，并在同事务完成主监护角色切换。
+2. `action=REJECT`：`transfer_state=REJECTED`，`confirmed_at` 固定返回 `null`，并写入 `sys_user_patient.transfer_rejected_at/transfer_reject_reason`。
+
 ### 3.3.5 POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/cancel
 
 用途：发起方撤销未确认转移。
@@ -5043,6 +5048,8 @@ X-Trace-Id: trc_demo_20260406_001
 | confirmed_at | string | 签收时间（ISO-8601） |
 
 错误码：E_GOV_4030、E_MAT_4041、E_MAT_4092、E_REQ_4001。
+
+落库语义：`status/confirmed_at` 映射 `tag_apply_record.status/tag_apply_record.closed_at`。
 
 请求示例：
 ```http

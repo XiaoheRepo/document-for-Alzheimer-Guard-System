@@ -188,6 +188,7 @@ medical_history JSONB 键契约：
 | transfer_cancelled_at | timestamptz | null | 撤销时间 |
 | transfer_cancel_reason | varchar(256) | null | 撤销原因 |
 | transfer_expire_at | timestamptz | null | 过期时间 |
+| transfer_confirmed_at | timestamptz | null | 确认接受时间 |
 | transfer_rejected_at | timestamptz | null | 拒绝时间 |
 | transfer_reject_reason | varchar(256) | null | 拒绝原因 |
 | created_at | timestamptz | not null | 创建时间 |
@@ -197,6 +198,8 @@ medical_history JSONB 键契约：
 
 - check(relation_status in ('PENDING','ACTIVE','REVOKED'))
 - check(transfer_state in ('NONE','PENDING_CONFIRM','ACCEPTED','REJECTED','CANCELLED','EXPIRED'))
+- check((transfer_state='ACCEPTED' and transfer_confirmed_at is not null) or (transfer_state<>'ACCEPTED' and transfer_confirmed_at is null))
+- check((transfer_state='REJECTED' and transfer_rejected_at is not null and transfer_reject_reason is not null) or (transfer_state<>'REJECTED' and transfer_rejected_at is null and transfer_reject_reason is null))
 - uq_transfer_pending(patient_id) where transfer_state='PENDING_CONFIRM'
 - uq_transfer_request_id(transfer_request_id) where transfer_request_id is not null
 - uq_primary_guardian_per_patient(patient_id) where relation_role='PRIMARY_GUARDIAN' and relation_status='ACTIVE'
@@ -260,6 +263,7 @@ medical_history JSONB 键契约：
 约束：
 
 - check(status in ('ACTIVE','RESOLVED','FALSE_ALARM'))
+- check((status='ACTIVE' and closed_at is null) or (status in ('RESOLVED','FALSE_ALARM') and closed_at is not null))
 - uq_task_active_per_patient(patient_id) where status='ACTIVE'
 - 状态更新必须条件更新（where id=? and status=?）
 
@@ -421,7 +425,7 @@ medical_history JSONB 键契约：
 - check(status in ('PENDING','PROCESSING','CANCEL_PENDING','CANCELLED','SHIPPED','EXCEPTION','COMPLETED'))
 - check((approved_at is null) or status in ('PROCESSING','CANCEL_PENDING','CANCELLED','SHIPPED','EXCEPTION','COMPLETED'))
 - check((rejected_at is null and reject_reason is null) or (rejected_at is not null and reject_reason is not null))
-- check((closed_at is null) or status in ('CANCELLED','COMPLETED'))
+- check((status in ('CANCELLED','COMPLETED') and closed_at is not null) or (status in ('PENDING','PROCESSING','CANCEL_PENDING','SHIPPED','EXCEPTION') and closed_at is null))
 
 索引：
 
@@ -454,6 +458,7 @@ medical_history JSONB 键契约：
 
 - messages 更新必须原子追加或 version CAS，禁止覆盖写。
 - check(status in ('ACTIVE','ARCHIVED'))
+- check((status='ACTIVE' and archived_at is null) or (status='ARCHIVED' and archived_at is not null))
 - 单会话预计轮数 > 50 时，必须启用 ai_session_message 拆分存储，避免 JSONB 触发高频 TOAST 重写。
 
 token_usage JSONB 兼容键契约（多供应商统一）：
@@ -606,6 +611,7 @@ token_usage JSONB 兼容键契约（多供应商统一）：
 约束：
 
 - check(read_status in ('UNREAD','READ'))
+- check((read_status='UNREAD' and read_at is null) or (read_status='READ' and read_at is not null))
 
 索引：
 
@@ -849,7 +855,8 @@ AI Agent 策略键约定：
 | 3.2.10/3.2.12 线索复核队列与分配 | review_status/assignee_user_id/assigned_at/risk_score | clue_record | review_status/assignee_user_id/assigned_at/risk_score |
 | 3.2.13 发起补证请求 | - | - | 毕设版本暂不开放 |
 | 3.3.1/3.3.12 监护邀请创建与查询 | invite_id/status/expire_at | guardian_invitation | invite_id/status/expire_at/invitee_user_id |
-| 3.3.3/3.3.4 主监护转移 | transfer_request_id | sys_user_patient | transfer_request_id（全局唯一） |
+| 3.3.3 主监护转移发起 | transfer_request_id/transfer_state/requested_at/expire_at | sys_user_patient | transfer_request_id/transfer_state/transfer_requested_at/transfer_expire_at |
+| 3.3.4 主监护转移确认 | transfer_state/confirmed_at/reject_reason | sys_user_patient | transfer_state/transfer_confirmed_at/transfer_rejected_at/transfer_reject_reason |
 | 3.3.8/3.3.9 患者建档与更新 | blood_type/chronic_diseases/allergy_notes | patient_profile | medical_history(JSONB) |
 | 3.3.8/3.3.9 患者建档与更新 | avatar_url | patient_profile | photo_url（not null，禁止清空） |
 | 3.3.10 围栏配置 | fence_enabled/fence_center/fence_radius_m | patient_profile | fence_enabled/fence_center/fence_radius_m |
@@ -859,6 +866,7 @@ AI Agent 策略键约定：
 | 3.4.9 取消驳回 | status/reject_reason/rejected_at | tag_apply_record | status/reject_reason/rejected_at |
 | 3.4.10 工单发货 | tracking_number/courier_name | tag_apply_record | tracking_number/courier_name |
 | 3.4.13 异常关闭 | status/closed_at | tag_apply_record | status/closed_at |
+| 3.4.14 家属签收 | status/confirmed_at | tag_apply_record | status/closed_at |
 | 3.4.15 批量入库标签 | tag_code/tag_type/batch_no | tag_asset | tag_code/tag_type/import_batch_no |
 | 3.4.16 标签重置 | status/reset_at | tag_asset | status/reset_at |
 | 3.4.17 标签恢复 | status/patient_id/recovered_at | tag_asset | status/patient_id/recovered_at |

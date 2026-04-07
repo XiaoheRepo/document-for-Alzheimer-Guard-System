@@ -447,7 +447,7 @@ WHERE session_id = :session_id
 
 处理要点：
 1. 二次校验受方 relation_status=ACTIVE。
-2. ACCEPT：同事务完成旧主降级与新主升级。
+2. ACCEPT：同事务完成旧主降级与新主升级，并写 transfer_confirmed_at。
 3. REJECT：写 transfer_rejected_at、transfer_reject_reason。
 
 错误码：E_PRO_4041、E_PRO_4045、E_PRO_4097、E_PRO_4099、E_PRO_4011、E_PRO_4013、E_REQ_4001。
@@ -758,6 +758,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 | transfer_cancelled_at | timestamptz | null | 主监护转移撤销时间 |
 | transfer_cancel_reason | varchar(256) | null | 主监护转移撤销原因 |
 | transfer_expire_at | timestamptz | null | 过期时间 |
+| transfer_confirmed_at | timestamptz | null | 确认接受时间 |
 | transfer_rejected_at | timestamptz | null | 拒绝时间 |
 | transfer_reject_reason | varchar(256) | null | 拒绝原因 |
 | created_at | timestamptz | not null | 创建时间 |
@@ -767,6 +768,8 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 - ux_user_patient_active(user_id, patient_id, relation_status)
 - check(relation_status in ('PENDING','ACTIVE','REVOKED'))
 - check(transfer_state in ('NONE','PENDING_CONFIRM','ACCEPTED','REJECTED','CANCELLED','EXPIRED'))
+- transfer_state='ACCEPTED' 时，transfer_confirmed_at 必须非空；其他状态必须为空。
+- transfer_state='REJECTED' 时，transfer_rejected_at 与 transfer_reject_reason 必须成对非空；其他状态必须为空。
 - uq_transfer_pending(patient_id) where transfer_state='PENDING_CONFIRM'
 - 主监护转移链路必须完整记录发起/撤销/拒绝三类审计字段，满足 AC-027 合规追踪。
 
@@ -815,6 +818,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 
 关键约束：
 - uq_task_active_per_patient(patient_id) where status='ACTIVE'
+- status='ACTIVE' 时 closed_at 必须为空；status in ('RESOLVED','FALSE_ALARM') 时 closed_at 必须非空。
 - 状态流转必须条件更新，禁止无条件 UPDATE。
 
 ### 5.5 clue_record
@@ -948,7 +952,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 - `status in ('PENDING','PROCESSING','CANCEL_PENDING','CANCELLED','SHIPPED','EXCEPTION','COMPLETED')`。
 - `approved_at` 非空时，`status` 仅允许 `PROCESSING/CANCEL_PENDING/CANCELLED/SHIPPED/EXCEPTION/COMPLETED`。
 - `rejected_at` 与 `reject_reason` 必须成对出现。
-- `closed_at` 非空时，`status` 仅允许 `CANCELLED/COMPLETED`。
+- `status in ('CANCELLED','COMPLETED')` 时，`closed_at` 必须非空；其他状态必须为空。
 
 ### 5.8A 物流轨迹能力（毕设精简）
 
@@ -1010,6 +1014,7 @@ token_usage JSONB 键契约（统一解析口径）：
 - prompt_tokens、completion_tokens、total_tokens 为必填整型键。
 - total_tokens 必须等于 prompt_tokens + completion_tokens。
 - model_price_tier、currency、estimated_cost 为对账与 BI 必填键。
+- status='ACTIVE' 时 archived_at 必须为空；status='ARCHIVED' 时 archived_at 必须非空。
 
 并发约束：
 - 禁止全量读改写覆盖。
@@ -1260,6 +1265,10 @@ AI 与 Agent 配置键白名单（用于模型/供应商/策略治理）：
 | trace_id | varchar(64) | not null | 链路标识 |
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
+
+关键约束：
+- `read_status in ('UNREAD','READ')`。
+- `read_status='UNREAD'` 时 `read_at` 必须为空；`read_status='READ'` 时 `read_at` 必须非空。
 
 ### 5.16 数据导出落库（毕设精简）
 

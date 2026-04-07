@@ -9747,6 +9747,16 @@ Topic 闭环说明：material-service 消费 tag.bound 后，触发 order.auto_c
 | GovernanceSentinel | agent.capability.governance.enabled |
 | OutboxReliabilityAgent | agent.capability.outbox_reliability.enabled |
 
+Agent 策略配置键（`sys_config.scope=ai_policy`）：
+
+| config_key | 说明 |
+| :--- | :--- |
+| agent.execution.max_level | 允许执行上限（A0/A1/A2/A3） |
+| agent.confirmation.policy | 确认级别策略映射 |
+| agent.manual_only.actions | 人工专属接口白名单 |
+
+说明：上述策略键与能力包开关键共同构成 `ai_policy` 作用域下的完整 Agent 治理键集。
+
 ### 9.3 执行等级与确认策略
 
 | 等级 | 执行语义 | 最低确认策略 | 典型用途 |

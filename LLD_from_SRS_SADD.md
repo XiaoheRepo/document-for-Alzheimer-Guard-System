@@ -792,6 +792,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 语义约束：
 - REJECTED：受邀人显式拒绝。
 - REVOKED：邀请方主动撤销。
+- 邀请创建接口（3.5.1）仅允许 `relation_role=GUARDIAN`；`PRIMARY_GUARDIAN` 仅用于历史兼容/扩展预留，不得通过邀请链路直接赋予。
 
 ### 5.4 rescue_task
 
@@ -917,7 +918,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 | quantity | int | not null | 数量（1-20） |
 | apply_note | varchar(256) | null | 申领备注 |
 | tag_code | varchar(100) | null | 发货时锁定 |
-| status | varchar(20) | not null | PENDING/PROCESSING/REJECTED/CANCEL_PENDING/CANCELLED/SHIPPED/EXCEPTION/COMPLETED |
+| status | varchar(20) | not null | PENDING/PROCESSING/CANCEL_PENDING/CANCELLED/SHIPPED/EXCEPTION/COMPLETED |
 | delivery_address | varchar(512) | not null | 收货地址 |
 | tracking_number | varchar(64) | null | 物流单号 |
 | courier_name | varchar(64) | null | 物流公司 |
@@ -1005,6 +1006,7 @@ token_usage JSONB 键契约（统一解析口径）：
 | content | text | not null | 原始记忆内容 |
 | tags | jsonb | null | 语义标签数组 |
 | source_version | bigint | not null default 1 | 版本号 |
+| source_event_id | varchar(64) | null | 触发向量化事件号 |
 | created_by | bigint | not null | 创建人 |
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
@@ -1272,7 +1274,6 @@ AI 与 Agent 配置键白名单（用于模型/供应商/策略治理）：
 
 核心流转：
 - PENDING -> PROCESSING -> SHIPPED -> COMPLETED。
-- PENDING -> REJECTED（管理端拒绝申请）。
 - PROCESSING -> CANCEL_PENDING -> CANCELLED 或回退 PROCESSING。
 - SHIPPED -> EXCEPTION -> PROCESSING/CANCELLED。
 

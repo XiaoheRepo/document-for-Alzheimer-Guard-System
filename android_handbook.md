@@ -185,7 +185,7 @@ data class Notification(
 1. 所有请求必须带 `X-Trace-Id`。
 2. 所有写请求（POST/PUT/PATCH/DELETE）必须带 `X-Request-Id`。
 3. 受保护接口必须带 `Authorization: Bearer <access_token>`。
-4. 非浏览器匿名链路可带 `X-Anonymous-Token`，且不得与 Cookie 凭据冲突。
+4. Android 匿名链路统一使用 `X-Anonymous-Token`；客户端不使用 Cookie 凭据。
 
 ### 6.2 拦截器落地
 
@@ -263,6 +263,11 @@ class TraceAndIdempotencyInterceptor(
 
 ## 8. 匿名扫码与手动录入链路
 
+端边界说明：
+1. 本章仅定义 Android 原生客户端的匿名线索上报实现。
+2. Web/H5/小程序端的上报交互不在本手册范围。
+3. `GET /r/{resource_token}` 与 `GET /p/{short_code}/...` 作为服务端路由入口使用，Android 仅消费路由结果并映射到本地页面，不在 WebView 完成核心上报。
+
 ### 8.1 关键接口
 
 1. `GET /r/{resource_token}`
@@ -273,8 +278,8 @@ class TraceAndIdempotencyInterceptor(
 
 ### 8.2 客户端强约束
 
-1. 不允许在 Body 传 `entry_token`。
-2. App 端匿名凭据使用 `X-Anonymous-Token`。
+1. Android 客户端不使用 `entry_token`（含 Body/Cookie）。
+2. 匿名凭据统一使用 `X-Anonymous-Token`。
 3. 若服务端返回 `E_CLUE_4012`，必须清除本地匿名令牌并提示重新扫码。
 4. 线索上报成功后仅展示回执，不展示患者隐私信息。
 
@@ -486,10 +491,10 @@ fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
 
 | 页面 ID | 页面名称 | 关键接口 | 布局规范 | 交互规范 |
 | :--- | :--- | :--- | :--- | :--- |
-| PUB-01 | 扫码解析页 | GET /r/{resource_token} | 全屏状态页（解析中/成功跳转/失败） | 启动即请求；成功按 Location 跳转；失败显示重试与手动录入入口 |
+| PUB-01 | 扫码解析页 | GET /r/{resource_token} | 全屏状态页（解析中/成功跳转/失败） | 启动即请求；成功按路由结果映射到本地页面；失败显示重试与手动录入入口 |
 | PUB-02 | 手动录入页 | POST /api/v1/public/clues/manual-entry | 顶部说明 + short_code/pin/captcha 表单 + 提交按钮 | 校验通过前禁用提交；429 按 Retry-After 倒计时；成功缓存匿名令牌并跳转上报页 |
-| PUB-03 | 匿名线索上报页 | GET /p/{short_code}/clues/new, POST /api/v1/clues/report | 地图卡 + 定位信息 + 描述输入 + 照片区 + 提交按钮 | 提交时自动带 X-Anonymous-Token；成功跳回执页；E_CLUE_4012 触发重新扫码 |
-| PUB-04 | 匿名紧急上报页 | GET /p/{short_code}/emergency/report, POST /api/v1/clues/report | 红色风险提示条 + 一键定位 + 快速提交区 | 默认聚焦“立即上报”；失败保留表单；429 显示冷却提示 |
+| PUB-03 | 匿名线索上报页 | GET /p/{short_code}/clues/new（路由判定），POST /api/v1/clues/report | 地图卡 + 定位信息 + 描述输入 + 照片区 + 提交按钮 | 提交时自动带 X-Anonymous-Token；成功跳回执页；E_CLUE_4012 触发重新扫码 |
+| PUB-04 | 匿名紧急上报页 | GET /p/{short_code}/emergency/report（路由判定），POST /api/v1/clues/report | 红色风险提示条 + 一键定位 + 快速提交区 | 默认聚焦“立即上报”；失败保留表单；429 显示冷却提示 |
 | PUB-05 | 匿名上报回执页 | POST /api/v1/clues/report（结果页） | 回执卡 + 时间 + 状态 + 继续上报入口 | 不展示患者隐私字段；支持复制 trace_id 反馈客服 |
 | AUTH-01 | 登录页 | POST /api/v1/auth/login | Logo 区 + 用户名/密码 + 登录按钮 + 去注册入口 | 防重复提交；401 提示并保留输入；成功写会话并进入 HOME-01 |
 | AUTH-02 | 注册页 | POST /api/v1/auth/register | 顶栏 + 注册表单 + 注册按钮 | 实时校验用户名与密码；E_AUTH_4091 就地提示“用户名已存在” |

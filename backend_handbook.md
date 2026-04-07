@@ -525,6 +525,32 @@ void assertOwnership(Long operatorId, Long patientId, Role role) {
 4. 对 APP/MINI_PROGRAM 同步回写 X-Anonymous-Token（与 entry_token 等值）。
 5. NFC 作为后续能力上线时，感应打开 URL 必须仍为 /r/{resource_token}，复用同一动态路由逻辑，不得新增独立匿名入口路由。
 
+#### 7.7.1 resource_link 生成规则（确定版）
+
+输入参数：
+1. `PUBLIC_ENTRY_BASE_URL`（例如 `https://app.example.com`）。
+2. `resource_token`（Base64URL，长度 32-1024）。
+
+生成步骤：
+1. 校验 `PUBLIC_ENTRY_BASE_URL`：必须为 HTTPS，去除末尾 `/`。
+2. 校验 `resource_token`：仅允许 Base64URL 字符集，长度在 32-1024。
+3. 生成统一入口：`resource_link = PUBLIC_ENTRY_BASE_URL + "/r/" + resource_token`。
+4. 校验生成结果长度不超过 1024（与存储字段约束一致）。
+5. 与发货分配事务同提交：`tag_asset UNBOUND -> ALLOCATED` 与 `resource_link` 写入必须同事务。
+
+幂等与轮换规则：
+1. 同一 `order_id + tag_code` 重复触发分配时，未发生风险轮换则返回同一 `resource_link`。
+2. 标签作废重发、密钥轮换、泄露应急时，必须生成新 `resource_token` 并重建 `resource_link`。
+3. NFC 上线后，NDEF URL 写入值必须等于该 `resource_link`，禁止生成第二套入口格式。
+
+#### 7.7.2 可运行前置条件（上线前必过）
+
+1. 环境变量 `PUBLIC_ENTRY_BASE_URL` 已在 dev/test/prod 分环境配置。
+2. 网关已放行 `/r/{resource_token}`，并完成 HTTPS 与证书配置。
+3. 通过 BOUND/LOST/UNBOUND/ALLOCATED/VOID 五态回归，路由行为与错误码符合约束。
+4. 通过异常回归：非法 token、过期 token、密钥轮换后旧 token 失效。
+5. 通过可观测性检查：`trace_id/request_id`、审计记录、错误码统计可追踪。
+
 ### 7.8 手动兜底入口实现规范（必须）
 
 POST /api/v1/public/clues/manual-entry 必须满足：

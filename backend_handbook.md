@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 | :--- | :--- |
 | 文档名称 | 后端开发手册（Backend Handbook） |
-| 文档版本 | V1.1 |
+| 文档版本 | V1.2 |
 | 日期 | 2026-04-07 |
 | 适用对象 | 后端研发、测试、运维、架构、技术管理 |
 | 文档目标 | 任何研发成员按本文可开发并交付同构后端系统 |
@@ -43,6 +43,21 @@
 | HC-04 | 全链路必须透传 trace_id | 无 trace_id 的请求在网关拒绝 |
 | HC-05 | WebSocket 必须路由后定向下发 | 禁止全量广播 |
 | HC-06 | 通知不依赖短信 | 通知仅站内与应用推送 |
+
+### 0.4 SRS 五段追踪矩阵（需求 -> 接口 -> 事件 -> 表 -> 测试）（必须）
+
+| 需求 | 接口（主） | 事件 | 表 | 测试 |
+| :--- | :--- | :--- | :--- | :--- |
+| FR-CLUE-008（BOUND 路由） | GET /r/{resource_token}；GET /p/{short_code}/clues/new | 无（网关路由行为） | tag_asset、patient_profile | ACC-BE-001 |
+| FR-CLUE-008（LOST 路由） | GET /r/{resource_token}；GET /p/{short_code}/emergency/report | 无（网关路由行为） | tag_asset、patient_profile | ACC-BE-002 |
+| FR-CLUE-008 + BR-007（UNBOUND/ALLOCATED/VOID 拦截） | GET /r/{resource_token} | 无（禁止进入上报链路） | tag_asset | ACC-BE-003 |
+| FR-CLUE-003 + BR-001（匿名兜底准入） | POST /api/v1/public/clues/manual-entry | 无（匿名准入，不产生日志外业务事件） | patient_profile、tag_asset、sys_log | ACC-BE-004 |
+| FR-CLUE-005（存疑线索双分支闭环） | POST /api/v1/clues/{clue_id}/override；POST /api/v1/clues/{clue_id}/reject | clue.validated（override=true）、clue.rejected | clue_record、sys_outbox_log、consumed_event_log、sys_log | ACC-BE-005 |
+| FR-PRO-005（主监护双阶段转移） | POST /api/v1/patients/{patient_id}/guardians/primary-transfer；POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/confirm；POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/cancel | 无独立 Kafka 事件（本期同事务状态更新） | sys_user_patient、guardian_invitation、sys_log | ACC-BE-006 |
+| FR-PRO-006 + BR-006（成员移除后转移失效） | DELETE /api/v1/patients/{patient_id}/guardians/{user_id} | 无独立 Kafka 事件（同事务取消未决转移） | sys_user_patient、guardian_invitation、sys_log | ACC-BE-007 |
+| FR-TASK-003/004（误报关闭门禁） | POST /api/v1/rescue/tasks/{task_id}/close | task.false_alarm、task.state.changed（仅合法关闭时） | rescue_task、sys_outbox_log、sys_log | ACC-BE-008 |
+| FR-PRO-008（围栏配置语义） | PUT /api/v1/patients/{patient_id}/fence | fence.breached（运行时由判定链路触发） | patient_profile | ACC-BE-009 |
+| FR-TASK-005 + HC-06（通知多通道触达） | POST /api/v1/rescue/tasks；POST /api/v1/rescue/tasks/{task_id}/close（触发通知） | task.created、task.resolved、task.false_alarm、fence.breached、track.updated | notification_inbox、sys_outbox_log、consumed_event_log | ACC-BE-010 |
 
 ---
 
@@ -380,6 +395,63 @@ Outbox phase：PENDING/DISPATCHING/SENT/RETRY/DEAD。
 1. DEAD 重放定位必须使用 event_id + created_at 复合键，禁止仅凭 event_id 查询。
 2. 重放成功必须回写 replay_reason/replay_token/last_intervention_*。
 
+### 6.8 匿名扫码动态路由决策（必须）
+
+标签状态 -> 路由行为：
+
+| tag_asset.status | 路由结果 | 令牌策略 | 安全约束 |
+| :--- | :--- | :--- | :--- |
+| BOUND | 302 -> /p/{short_code}/clues/new | 下发 entry_token（Cookie） | 匿名普通模式 |
+| LOST | 302 -> /p/{short_code}/emergency/report | 下发 entry_token（Cookie） | 匿名紧急模式 |
+| UNBOUND/ALLOCATED/VOID | 无效页或拒绝 | 不得下发 entry_token | 禁止进入线索上报链路 |
+
+实现约束：
+
+1. entry_token 必须设置为 HttpOnly + Secure + SameSite=Strict，Max-Age <= 120。
+2. APP/MINI_PROGRAM 调用 /r/{resource_token} 时，必须在响应头回写 X-Anonymous-Token，值与 entry_token 完全一致。
+3. 当 Cookie(entry_token) 与 X-Anonymous-Token 同时存在但值不一致，必须拒绝 E_CLUE_4012。
+
+### 6.9 监护邀请与主监护转移状态机（必须）
+
+主监护转移状态机：
+
+| 当前 transfer_state | 触发动作 | 下一状态 | 守卫 |
+| :--- | :--- | :--- | :--- |
+| NONE | transfer.request | PENDING_CONFIRM | 同患者仅允许一个 PENDING_CONFIRM |
+| PENDING_CONFIRM | transfer.confirm(ACCEPT) | ACCEPTED | 仅目标受方 + relation_status=ACTIVE |
+| PENDING_CONFIRM | transfer.confirm(REJECT) | REJECTED | reject_reason 必填 |
+| PENDING_CONFIRM | transfer.cancel | CANCELLED | 仅原发起方或 SUPERADMIN |
+| PENDING_CONFIRM | transfer.expire | EXPIRED | 定时任务触发 |
+| ACCEPTED/REJECTED/CANCELLED/EXPIRED | any | 原状态 | 终态不可变 |
+
+并发与竞态约束：
+
+1. DELETE /api/v1/patients/{patient_id}/guardians/{user_id} 时，若目标成员存在 PENDING_CONFIRM 请求，必须同事务取消该请求。
+2. 被移除成员发起的历史确认请求必须失效，统一返回状态冲突（E_PRO_4099）或受方身份失效（E_PRO_4011/E_PRO_4013）。
+3. transfer_request_id 必须全局唯一，且转移发起/确认/拒绝/撤销字段必须完整落审计。
+
+### 6.10 存疑线索复核闭环状态机（必须）
+
+| suspect_flag | review_status | 允许动作 | 结果事件 |
+| :--- | :--- | :--- | :--- |
+| false | NULL | 不入复核队列 | 无 |
+| true | PENDING | override | clue.validated（override=true） |
+| true | PENDING | reject | clue.rejected |
+| true | OVERRIDDEN/REJECTED | 只读 | 终态，不可重复处置 |
+
+字段守卫：
+
+1. review_status=OVERRIDDEN 时，override=true 且 override_reason 必填。
+2. review_status=REJECTED 时，rejected_by 与 reject_reason 必须成对非空。
+3. review_status in (OVERRIDDEN, REJECTED) 时，reviewed_at 必须非空。
+
+### 6.11 围栏配置与抑制语义（必须）
+
+1. fence_enabled=true 时，fence_center 与 fence_radius_m 必须同时存在，且半径范围 50-5000 米。
+2. fence_enabled=false 时，fence_center 与 fence_radius_m 必须同时置空。
+3. lost_status=NORMAL 时允许 fence.breached 触发告警；lost_status=MISSING 时必须抑制围栏告警风暴，但保留 track.updated 进展更新。
+4. 围栏判定必须基于 task.state.changed 的 L1/L2 投影缓存，不得高频同步 RPC 拉取 task-service。
+
 ---
 
 ## 7. API 开发实现规范
@@ -438,6 +510,44 @@ void assertOwnership(Long operatorId, Long patientId, Role role) {
 1. 普通列表：Offset（page_no/page_size/total/has_next）。
 2. 流水型列表：Cursor（next_cursor/has_next）。
 
+### 7.6 匿名凭据协同协议（必须）
+
+1. 浏览器 H5 仅使用 HttpOnly Cookie(entry_token) 透传匿名凭据，前端 JavaScript 不得读取或拼接。
+2. 非浏览器端允许使用 X-Anonymous-Token；若同时带 Cookie 与 Header，且值不一致，网关拒绝 E_CLUE_4012。
+3. 跨域匿名请求必须显式开启 credentials（Fetch: include / Axios: withCredentials=true）。
+4. 网关返回 Access-Control-Allow-Credentials=true 时必须使用明确 Origin，禁止与通配符 * 同时出现。
+
+### 7.7 GET /r/{resource_token} 动态路由实现规范（必须）
+
+1. 先验签 resource_token，再查询 tag_asset.status 与关联 short_code。
+2. BOUND 路由到 /p/{short_code}/clues/new；LOST 路由到 /p/{short_code}/emergency/report。
+3. UNBOUND/ALLOCATED/VOID 一律拦截，不得进入匿名上报页面。
+4. 对 APP/MINI_PROGRAM 同步回写 X-Anonymous-Token（与 entry_token 等值）。
+
+### 7.8 手动兜底入口实现规范（必须）
+
+POST /api/v1/public/clues/manual-entry 必须满足：
+
+1. 输入 short_code（6 位）+ pin_code（6 位）+ captcha_token + device_fingerprint。
+2. 成功后同时返回 manual_entry_token 与 Set-Cookie(entry_token)，且两者值一致。
+3. 频控阈值至少覆盖：IP 级、设备级、short_code 连续失败冷却。
+4. 令牌 TTL <= 120 秒，超时或重放统一返回 E_CLUE_4012。
+
+### 7.9 监护关系接口竞态规范（必须）
+
+1. 发起转移：POST /api/v1/patients/{patient_id}/guardians/primary-transfer。
+2. 受方确认/拒绝：POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/confirm。
+3. 发起方撤销：POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/cancel。
+4. 成员移除：DELETE /api/v1/patients/{patient_id}/guardians/{user_id}，必须同事务取消该成员未决转移请求。
+
+### 7.10 围栏接口输入守卫（必须）
+
+PUT /api/v1/patients/{patient_id}/fence：
+
+1. fence_enabled=true 时，fence_center(lat/lng) 与 fence_radius_m 必填。
+2. fence_enabled=false 时，fence_center 与 fence_radius_m 必须置空。
+3. 坐标入库前统一标准化为 WGS84，非法坐标或转换失败直接拒绝。
+
 ---
 
 ## 8. API -> Domain -> DB 映射手册
@@ -463,6 +573,11 @@ void assertOwnership(Long operatorId, Long patientId, Role role) {
 | export_result/file_url | export.result | sys_log.detail(export_result) |
 | operator_user_id/operator_username | audit.operator | sys_log.operator_user_id/operator_username |
 | invitation.status | guardianInvitation.status | guardian_invitation.status |
+| transfer_request_id | guardian.transferRequestId | sys_user_patient.transfer_request_id |
+| transfer_state | guardian.transferState | sys_user_patient.transfer_state |
+| cancel_reason | guardian.transferCancelReason | sys_user_patient.transfer_cancel_reason |
+| reject_reason(confirm) | guardian.transferRejectReason | sys_user_patient.transfer_reject_reason |
+| fence_enabled/fence_center/fence_radius_m | profile.fence | patient_profile.fence_enabled/fence_center/fence_radius_m |
 | replay.created_at | outboxReplay.createdAt | sys_outbox_log.created_at |
 | medical_history.* | profile.medicalHistory | patient_profile.medical_history |
 | avatar_url | profile.avatarUrl | patient_profile.photo_url |
@@ -652,6 +767,17 @@ COMMENT ON COLUMN rescue_task.closed_at IS 'API.end_time 映射字段';
 2. 消费成功后同事务写幂等日志。
 3. 投影更新仅接受 incoming.version > current.version。
 
+### 11.5 核心事件消费动作矩阵（必须）
+
+| 事件 | 生产方 | 消费方 | 消费动作（必须） |
+| :--- | :--- | :--- | :--- |
+| clue.suspected | clue-analysis-service | admin-review-service | 创建复核任务，设置 review_status=PENDING |
+| clue.validated | clue-analysis-service/admin-review-service | task-service/ai-orchestrator-service | 推进任务进展并触发策略更新 |
+| clue.rejected | admin-review-service | clue-analysis-service/governance | 关闭复核链路并记录拒绝审计 |
+| task.state.changed | task-service | clue-analysis-service | 更新 L1/L2 状态投影，用于围栏抑制判定 |
+| fence.breached | clue-analysis-service | task-service/notify-service | 触发告警事件并写通知落库 |
+| task.false_alarm | task-service | profile-service/notify-service | 关闭任务但禁止进入长期经验沉淀 |
+
 ---
 
 ## 12. 安全与合规规范
@@ -693,6 +819,19 @@ COMMENT ON COLUMN rescue_task.closed_at IS 'API.end_time 映射字段';
 6. action_source（USER/AI_AGENT）。
 7. agent_profile/execution_mode/confirm_level。
 8. blocked_reason（门禁拦截时必填）。
+
+### 12.6 通知触达与兜底矩阵（必须）
+
+| 触发场景 | 一级通道 | 二级通道 | 禁止事项 |
+| :--- | :--- | :--- | :--- |
+| task.created/task.resolved/task.false_alarm | 应用推送 | 站内通知入箱 | 依赖短信 |
+| fence.breached | 应用推送（高优先） | 站内通知 + 未读红点 | 仅 WebSocket 单通道 |
+| WebSocket 路由缺失/离线 | 站内通知入箱 | 推送重试队列 | 丢弃告警 |
+
+执行要求：
+
+1. notify-service 必须保证幂等写入 notification_inbox。
+2. 推送失败必须可重试并记录失败原因，禁止静默失败。
 
 ---
 
@@ -884,6 +1023,220 @@ CI 必跑：
 1. 核心写接口 TP99 <= 200ms（示例基线，可按容量评审微调）。
 2. 跨域一致性收敛 TP99 <= 3s。
 3. 向量召回高密度患者 TP95 < 120ms，TP99 < 200ms，recall@10 >= 0.90。
+
+### 16.5 SRS 关键验收测试模板（请求、事件、落库断言）（必须）
+
+执行约定：
+
+1. 所有请求必须带 X-Trace-Id；写请求必须带 X-Request-Id。
+2. 事件断言优先使用 Kafka 探针；无探针时使用 sys_outbox_log + consumed_event_log 组合断言。
+3. 落库断言统一在时间窗 [t0, t1] 内执行，避免历史数据干扰。
+
+#### 16.5.0 用例索引
+
+| 编号 | 验收场景 | 关联需求 |
+| :--- | :--- | :--- |
+| ACC-BE-001 | 扫码标签状态为 BOUND | FR-CLUE-008 |
+| ACC-BE-002 | 扫码标签状态为 LOST | FR-CLUE-008 |
+| ACC-BE-003 | 扫码标签状态为 UNBOUND/ALLOCATED/VOID | FR-CLUE-008、BR-007 |
+| ACC-BE-004 | 手动兜底 short_code + pin_code + captcha | FR-CLUE-003 |
+| ACC-BE-005 | 可疑线索 override 与 reject 分支 | FR-CLUE-005 |
+| ACC-BE-006 | 发起主监护转移并由受方 ACCEPT/REJECT | FR-PRO-005 |
+| ACC-BE-007 | 移除存在未决转移请求的成员 | FR-PRO-006、BR-006 |
+| ACC-BE-008 | FALSE_ALARM 关闭任务且 reason 缺失 | FR-TASK-003/004 |
+| ACC-BE-009 | 围栏开启/关闭输入组合校验 | FR-PRO-008 |
+| ACC-BE-010 | WebSocket 离线时任务进展通知 | FR-TASK-005、HC-06 |
+
+#### 16.5.1 ACC-BE-001 扫码标签状态为 BOUND
+
+请求步骤：
+
+1. 准备数据：tag_asset.status=BOUND，且 patient_profile.short_code 有效。
+2. 发起 GET /r/{resource_token}。
+3. 断言响应为 302，Location=/p/{short_code}/clues/new，且下发 entry_token。
+
+事件断言：
+
+1. 本请求不应发布 clue.reported.raw、clue.validated、clue.rejected。
+2. sys_outbox_log 在 [t0,t1] 内不应新增上述 topic 记录。
+
+落库断言（SQL 模板）：
+
+1. SELECT status FROM tag_asset WHERE tag_code=:tag_code; 结果为 BOUND。
+2. SELECT COUNT(1) FROM clue_record WHERE patient_id=:patient_id AND created_at BETWEEN :t0 AND :t1; 结果为 0。
+3. SELECT COUNT(1) FROM notification_inbox WHERE related_patient_id=:patient_id AND created_at BETWEEN :t0 AND :t1; 结果为 0。
+
+#### 16.5.2 ACC-BE-002 扫码标签状态为 LOST
+
+请求步骤：
+
+1. 准备数据：tag_asset.status=LOST，且 patient_profile.short_code 有效。
+2. 发起 GET /r/{resource_token}。
+3. 断言响应为 302，Location=/p/{short_code}/emergency/report，且下发 entry_token。
+
+事件断言：
+
+1. 本请求不应直接发布 clue.validated、task.state.changed。
+2. sys_outbox_log 在 [t0,t1] 内不应新增由扫码路由直接触发的业务事件。
+
+落库断言（SQL 模板）：
+
+1. SELECT status FROM tag_asset WHERE tag_code=:tag_code; 结果为 LOST。
+2. SELECT COUNT(1) FROM clue_record WHERE patient_id=:patient_id AND created_at BETWEEN :t0 AND :t1; 结果为 0。
+3. SELECT COUNT(1) FROM notification_inbox WHERE related_patient_id=:patient_id AND created_at BETWEEN :t0 AND :t1; 结果为 0。
+
+#### 16.5.3 ACC-BE-003 扫码标签状态为 UNBOUND/ALLOCATED/VOID
+
+请求步骤：
+
+1. 分别准备 tag_asset.status=UNBOUND、ALLOCATED、VOID 三组数据。
+2. 对每组数据发起 GET /r/{resource_token}。
+3. 断言返回拦截页或业务拒绝，不下发 entry_token。
+
+事件断言：
+
+1. 不应发布任何 clue.* 或 task.* 事件。
+2. sys_outbox_log 在 [t0,t1] 内新增事件数为 0。
+
+落库断言（SQL 模板）：
+
+1. SELECT status FROM tag_asset WHERE tag_code=:tag_code; 状态不变。
+2. SELECT COUNT(1) FROM clue_record WHERE tag_code=:tag_code AND created_at BETWEEN :t0 AND :t1; 结果为 0。
+3. SELECT COUNT(1) FROM notification_inbox WHERE related_patient_id=:patient_id AND created_at BETWEEN :t0 AND :t1; 结果为 0。
+
+#### 16.5.4 ACC-BE-004 手动兜底 short_code + pin_code + captcha
+
+请求步骤：
+
+1. 准备合法 short_code、pin_code、captcha_token、device_fingerprint。
+2. 发起 POST /api/v1/public/clues/manual-entry。
+3. 断言 HTTP 201，返回 manual_entry_token，且与 Set-Cookie(entry_token) 一致。
+
+事件断言：
+
+1. 兜底准入阶段不应发布 clue.reported.raw、clue.validated、clue.rejected。
+2. sys_outbox_log 在 [t0,t1] 内不应新增 clue.* 事件。
+
+落库断言（SQL 模板）：
+
+1. SELECT short_code, pin_code_hash FROM patient_profile WHERE short_code=:short_code; 记录存在且 pin_code_hash 非空。
+2. SELECT COUNT(1) FROM clue_record WHERE patient_id=:patient_id AND created_at BETWEEN :t0 AND :t1; 结果为 0。
+3. SELECT COUNT(1) FROM tag_asset WHERE patient_id=:patient_id; 与基线数量一致（准入不改标签状态）。
+
+#### 16.5.5 ACC-BE-005 可疑线索 override 与 reject 分支
+
+请求步骤：
+
+1. 准备两条 suspect_flag=true 且 review_status=PENDING 的线索（clue_a、clue_b）。
+2. 发起 POST /api/v1/clues/{clue_a}/override（override=true，override_reason 有效）。
+3. 发起 POST /api/v1/clues/{clue_b}/reject（reject_reason 有效）。
+
+事件断言：
+
+1. clue_a 必须发布 clue.validated，且 payload.override=true。
+2. clue_b 必须发布 clue.rejected。
+3. consumed_event_log 应可观察到下游消费记录（允许最终一致延迟）。
+
+落库断言（SQL 模板）：
+
+1. SELECT review_status, override, override_reason, reviewed_at FROM clue_record WHERE id=:clue_a; 结果为 OVERRIDDEN/true/非空/非空。
+2. SELECT review_status, rejected_by, reject_reason, reviewed_at FROM clue_record WHERE id=:clue_b; 结果为 REJECTED/非空/非空/非空。
+3. SELECT COUNT(1) FROM sys_outbox_log WHERE topic IN ('clue.validated','clue.rejected') AND created_at BETWEEN :t0 AND :t1; 结果 >= 2。
+
+#### 16.5.6 ACC-BE-006 主监护转移 ACCEPT/REJECT
+
+请求步骤：
+
+1. 发起 POST /api/v1/patients/{patient_id}/guardians/primary-transfer，获得 transfer_request_id。
+2. 由受方发起 POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/confirm（action=ACCEPT）。
+3. 使用新请求重复步骤 1，并执行 action=REJECT（reject_reason 有效）。
+
+事件断言：
+
+1. 转移链路不强依赖独立 Kafka 事件；断言不产生与 task/clue 领域无关的误事件。
+2. sys_outbox_log 在 [t0,t1] 内不应出现与本转移请求无关的 task.false_alarm/clue.rejected 事件。
+
+落库断言（SQL 模板）：
+
+1. ACCEPT 后：SELECT transfer_state, transfer_confirmed_at FROM sys_user_patient WHERE patient_id=:patient_id AND transfer_request_id=:req_accept; 结果为 ACCEPTED/非空。
+2. REJECT 后：SELECT transfer_state, transfer_rejected_at, transfer_reject_reason FROM sys_user_patient WHERE patient_id=:patient_id AND transfer_request_id=:req_reject; 结果为 REJECTED/非空/非空。
+3. ACCEPT 后主监护切换：校验同 patient_id 仅一个 relation_role=PRIMARY_GUARDIAN 且 relation_status=ACTIVE。
+
+#### 16.5.7 ACC-BE-007 移除存在未决转移请求的成员
+
+请求步骤：
+
+1. 先创建 transfer_state=PENDING_CONFIRM 的转移请求，目标成员为 user_x。
+2. 发起 DELETE /api/v1/patients/{patient_id}/guardians/{user_x}。
+3. 继续调用旧 transfer_request_id 的 confirm，断言返回 E_PRO_4099 或 E_PRO_4011/E_PRO_4013。
+
+事件断言：
+
+1. 不应出现旧请求被确认成功的后续事件。
+2. sys_outbox_log 不应出现与该旧请求关联的成功确认事件。
+
+落库断言（SQL 模板）：
+
+1. SELECT relation_status FROM sys_user_patient WHERE patient_id=:patient_id AND user_id=:user_x; 结果为 REVOKED。
+2. SELECT transfer_state FROM sys_user_patient WHERE patient_id=:patient_id AND transfer_request_id=:req_id; 结果为 CANCELLED（或至少非 PENDING_CONFIRM）。
+3. SELECT transfer_cancelled_at FROM sys_user_patient WHERE patient_id=:patient_id AND transfer_request_id=:req_id; 结果非空。
+
+#### 16.5.8 ACC-BE-008 FALSE_ALARM 关闭任务且 reason 缺失
+
+请求步骤：
+
+1. 准备 status=ACTIVE 的任务。
+2. 发起 POST /api/v1/rescue/tasks/{task_id}/close，close_type=FALSE_ALARM 且不传 reason。
+3. 断言返回业务错误码（E_TASK_4005 或同语义错误）。
+
+事件断言：
+
+1. 不应发布 task.false_alarm。
+2. 不应发布 task.state.changed。
+
+落库断言（SQL 模板）：
+
+1. SELECT status, closed_at, close_reason FROM rescue_task WHERE id=:task_id; 结果为 ACTIVE/null/原值。
+2. SELECT COUNT(1) FROM sys_outbox_log WHERE aggregate_id=:task_aggregate_id AND topic IN ('task.false_alarm','task.state.changed') AND created_at BETWEEN :t0 AND :t1; 结果为 0。
+3. SELECT COUNT(1) FROM notification_inbox WHERE related_task_id=:task_id AND created_at BETWEEN :t0 AND :t1; 结果为 0。
+
+#### 16.5.9 ACC-BE-009 围栏开启/关闭输入组合校验
+
+请求步骤：
+
+1. 发起 PUT /api/v1/patients/{patient_id}/fence：fence_enabled=true，携带 fence_center + fence_radius_m。
+2. 发起 PUT /api/v1/patients/{patient_id}/fence：fence_enabled=false，显式置空 fence_center + fence_radius_m。
+3. 发起非法组合请求（fence_enabled=true 但缺 fence_center 或 fence_radius_m），断言被拒绝。
+
+事件断言：
+
+1. 围栏配置写入不应直接发布 task.false_alarm、clue.rejected。
+2. fence.breached 仅允许在后续运行时判定链路中出现。
+
+落库断言（SQL 模板）：
+
+1. 步骤1后：SELECT fence_enabled, fence_center, fence_radius_m FROM patient_profile WHERE id=:patient_id; 结果为 true/非空/范围内。
+2. 步骤2后：SELECT fence_enabled, fence_center, fence_radius_m FROM patient_profile WHERE id=:patient_id; 结果为 false/null/null。
+3. 步骤3后：patient_profile 记录保持步骤2结果不变。
+
+#### 16.5.10 ACC-BE-010 WebSocket 离线时任务进展通知兜底
+
+请求步骤：
+
+1. 模拟接收用户离线（清理 ws 路由，确保无可用 pod_id）。
+2. 触发任务进展写请求（例如 POST /api/v1/rescue/tasks 或合法关闭接口）。
+3. 等待 notify-service 消费完成。
+
+事件断言：
+
+1. 触发链路必须发布对应 task.* 或 fence.breached/track.updated 事件。
+2. consumed_event_log 中 notify-service 对应 topic 应存在消费记录。
+
+落库断言（SQL 模板）：
+
+1. SELECT type, read_status, related_task_id, related_patient_id, trace_id FROM notification_inbox WHERE user_id=:user_id AND created_at BETWEEN :t0 AND :t1 ORDER BY created_at DESC LIMIT 1; 结果应存在，且 read_status=UNREAD。
+2. 结果 type 必须属于 TASK_PROGRESS/FENCE_ALERT/TASK_CLOSED。
+3. trace_id 必须与触发请求 trace_id 一致。
 
 ---
 

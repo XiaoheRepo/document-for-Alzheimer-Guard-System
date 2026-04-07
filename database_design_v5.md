@@ -225,6 +225,7 @@ medical_history JSONB 键契约：
 | reject_reason | varchar(256) | null | 拒绝/撤销原因 |
 | expire_at | timestamptz | not null | 过期时间 |
 | accepted_at | timestamptz | null | 接受时间 |
+| rejected_at | timestamptz | null | 拒绝时间 |
 | revoked_at | timestamptz | null | 撤销时间 |
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
@@ -234,6 +235,10 @@ medical_history JSONB 键契约：
 - uq_guardian_invite_id(invite_id)
 - uq_guardian_invite_pending(patient_id, invitee_user_id) where status='PENDING'
 - check(status in ('PENDING','ACCEPTED','REJECTED','EXPIRED','REVOKED'))
+- check((status='ACCEPTED' and accepted_at is not null) or (status<>'ACCEPTED' and accepted_at is null))
+- check((status='REJECTED' and rejected_at is not null and reject_reason is not null) or (status<>'REJECTED' and rejected_at is null))
+- check((status='REVOKED' and revoked_at is not null and reject_reason is not null) or (status<>'REVOKED' and revoked_at is null))
+- check((reject_reason is null) or status in ('REJECTED','REVOKED'))
 
 索引：
 
@@ -309,6 +314,7 @@ medical_history JSONB 键契约：
 - check(coord_system='WGS84')
 - check((assignee_user_id is null and assigned_at is null) or (assignee_user_id is not null and assigned_at is not null))
 - check((suspect_flag=false and review_status is null) or (suspect_flag=true and review_status in ('PENDING','OVERRIDDEN','REJECTED')))
+- check(((review_status in ('OVERRIDDEN','REJECTED')) and reviewed_at is not null) or ((review_status is null or review_status='PENDING') and reviewed_at is null))
 
 坐标入库规则：
 
@@ -855,6 +861,7 @@ AI Agent 策略键约定：
 | 3.2.10/3.2.12 线索复核队列与分配 | review_status/assignee_user_id/assigned_at/risk_score | clue_record | review_status/assignee_user_id/assigned_at/risk_score |
 | 3.2.13 发起补证请求 | - | - | 毕设版本暂不开放 |
 | 3.3.1/3.3.12 监护邀请创建与查询 | invite_id/status/expire_at | guardian_invitation | invite_id/status/expire_at/invitee_user_id |
+| 3.3.2 监护邀请确认 | status/reject_reason | guardian_invitation | status/accepted_at/rejected_at/reject_reason |
 | 3.3.3 主监护转移发起 | transfer_request_id/transfer_state/requested_at/expire_at | sys_user_patient | transfer_request_id/transfer_state/transfer_requested_at/transfer_expire_at |
 | 3.3.4 主监护转移确认 | transfer_state/confirmed_at/reject_reason | sys_user_patient | transfer_state/transfer_confirmed_at/transfer_rejected_at/transfer_reject_reason |
 | 3.3.8/3.3.9 患者建档与更新 | blood_type/chronic_diseases/allergy_notes | patient_profile | medical_history(JSONB) |

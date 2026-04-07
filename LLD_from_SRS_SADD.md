@@ -785,7 +785,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 | relation_role | varchar(32) | not null | PRIMARY_GUARDIAN/GUARDIAN |
 | status | varchar(20) | not null default 'PENDING' | PENDING/ACCEPTED/REJECTED/EXPIRED/REVOKED |
 | reason | varchar(256) | null | 发起原因 |
-| reject_reason | varchar(256) | null | 拒绝原因 |
+| reject_reason | varchar(256) | null | 拒绝/撤销原因 |
 | expire_at | timestamptz | not null | 过期时间 |
 | accepted_at | timestamptz | null | 接受时间 |
 | rejected_at | timestamptz | null | 拒绝时间 |
@@ -794,8 +794,11 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 | updated_at | timestamptz | not null | 更新时间 |
 
 语义约束：
+- ACCEPTED：accepted_at 必须非空。
 - REJECTED：受邀人显式拒绝。
+- REJECTED：rejected_at 与 reject_reason 必须成对非空。
 - REVOKED：邀请方主动撤销。
+- REVOKED：revoked_at 与 reject_reason 必须成对非空。
 - 邀请创建接口（3.5.1）仅允许 `relation_role=GUARDIAN`；`PRIMARY_GUARDIAN` 仅用于历史兼容/扩展预留，不得通过邀请链路直接赋予。
 
 ### 5.4 rescue_task
@@ -855,6 +858,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 - 非可疑线索（suspect_flag=false）不得进入复核队列，review_status 必须为 NULL。
 - 可疑线索（suspect_flag=true）入队时 review_status 必须初始化为 PENDING。
 - 管理员处置后，review_status 仅允许流转为 OVERRIDDEN 或 REJECTED。
+- review_status in (OVERRIDDEN, REJECTED) 时 reviewed_at 必须非空；review_status in (NULL, PENDING) 时 reviewed_at 必须为空。
 - 当 review_status=OVERRIDDEN 时，override 必须为 true。
 - 当 review_status=REJECTED 时，rejected_by 与 reject_reason 必须成对非空。
 

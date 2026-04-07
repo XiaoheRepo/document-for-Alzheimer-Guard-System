@@ -2891,7 +2891,7 @@ X-Trace-Id: trc_demo_20260406_001
                  "inviter_user_id":  "2001",
                  "invitee_user_id":  "2002",
                  "relation_role":  "GUARDIAN",
-                 "status":  "PENDING",
+                 "status":  "ACCEPTED",
                  "reason":  "请协助共同监护",
                  "expire_at":  "2026-04-08T10:00:00Z",
                  "created_at":  "2026-04-06T10:00:00Z"
@@ -8832,7 +8832,7 @@ AI Agent 执行策略：
 | 字段 | 类型 | 说明 |
 | :--- | :--- | :--- |
 | task_id | string | 任务 ID |
-| status | string | RESOLVED/FALSE_ALARM |
+| status | string | RESOLVED |
 | closed_by | string | 操作人 ID |
 | closed_at | string | 关闭时间（ISO-8601） |
 

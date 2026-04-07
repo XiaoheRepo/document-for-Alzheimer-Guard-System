@@ -765,6 +765,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 
 索引与约束：
 - ux_user_patient_active(user_id, patient_id, relation_status)
+- check(relation_status in ('PENDING','ACTIVE','REVOKED'))
 - check(transfer_state in ('NONE','PENDING_CONFIRM','ACCEPTED','REJECTED','CANCELLED','EXPIRED'))
 - uq_transfer_pending(patient_id) where transfer_state='PENDING_CONFIRM'
 - 主监护转移链路必须完整记录发起/撤销/拒绝三类审计字段，满足 AC-027 合规追踪。
@@ -901,6 +902,8 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 | patient_id | bigint | null | 绑定患者 |
 | apply_record_id | bigint | null | 关联工单 |
 | void_reason | varchar(256) | null | 作废原因 |
+| lost_at | timestamptz | null | 挂失时间 |
+| void_at | timestamptz | null | 作废时间 |
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
 
@@ -924,7 +927,9 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 | courier_name | varchar(64) | null | 物流公司 |
 | resource_link | varchar(1024) | null | 资源链 |
 | cancel_reason | varchar(256) | null | 取消原因 |
+| approved_at | timestamptz | null | 审核通过时间 |
 | reject_reason | varchar(256) | null | 驳回原因 |
+| rejected_at | timestamptz | null | 驳回时间 |
 | exception_desc | varchar(512) | null | 异常说明 |
 | closed_at | timestamptz | null | 工单关闭时间（终态写入） |
 | created_at | timestamptz | not null | 创建时间 |
@@ -1130,6 +1135,10 @@ SLO 建议：
 1. 当 `action_source='AI_AGENT'` 且动作执行完成时，必须落库 `action_id/result_code/executed_at`。
 2. 当命中策略阻断（如 `POLICY_BLOCK`）时，`result_code` 必须落库；`executed_at` 可空。
 
+状态轨迹 detail 键契约：
+1. 当 `module='MATERIAL_ORDER'` 或 `module='TAG_ASSET'` 且 action 表示状态流转时，`detail` 必须包含 `from_status`、`to_status`。
+2. `detail.remark` 可选；时间线记录时间统一取 `sys_log.created_at`。
+
 ### 5.12 sys_outbox_log
 
 | 字段 | 类型 | 约束 | 说明 |
@@ -1148,6 +1157,11 @@ SLO 建议：
 | lease_until | timestamptz | null | 租约到期 |
 | sent_at | timestamptz | null | 成功时间 |
 | last_error | varchar(512) | null | 最近错误 |
+| last_intervention_by | bigint | null | 最近人工干预操作人 |
+| last_intervention_at | timestamptz | null | 最近人工干预时间 |
+| replay_reason | varchar(256) | null | 最近一次重放原因 |
+| replay_token | varchar(64) | null | 最近一次重放幂等键 |
+| replayed_at | timestamptz | null | 最近一次重放时间 |
 | created_at | timestamptz | not null，PK(联合)，分区键 | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
 
@@ -1158,6 +1172,7 @@ SLO 建议：
 主键与查询约束：
 - pk_outbox(event_id, created_at)
 - 按 event_id 定位记录时必须携带 created_at（或分区桶）以触发分区裁剪。
+- check(phase in ('PENDING','DISPATCHING','SENT','RETRY','DEAD'))
 
 ### 5.13 consumed_event_log（本地幂等）
 

@@ -195,6 +195,7 @@ medical_history JSONB 键契约：
 
 约束：
 
+- check(relation_status in ('PENDING','ACTIVE','REVOKED'))
 - check(transfer_state in ('NONE','PENDING_CONFIRM','ACCEPTED','REJECTED','CANCELLED','EXPIRED'))
 - uq_transfer_pending(patient_id) where transfer_state='PENDING_CONFIRM'
 - uq_transfer_request_id(transfer_request_id) where transfer_request_id is not null
@@ -258,6 +259,7 @@ medical_history JSONB 键契约：
 
 约束：
 
+- check(status in ('ACTIVE','RESOLVED','FALSE_ALARM'))
 - uq_task_active_per_patient(patient_id) where status='ACTIVE'
 - 状态更新必须条件更新（where id=? and status=?）
 
@@ -366,8 +368,14 @@ medical_history JSONB 键契约：
 | apply_record_id | bigint | null | 关联工单 |
 | import_batch_no | varchar(64) | null | 入库批次 |
 | void_reason | varchar(256) | null | 作废原因 |
+| lost_at | timestamptz | null | 挂失时间 |
+| void_at | timestamptz | null | 作废时间 |
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
+
+约束：
+
+- check(status in ('UNBOUND','ALLOCATED','BOUND','LOST','VOID'))
 
 索引：
 
@@ -393,11 +401,17 @@ medical_history JSONB 键契约：
 | courier_name | varchar(64) | null | 物流公司 |
 | resource_link | varchar(1024) | null | 资源链 |
 | cancel_reason | varchar(256) | null | 取消原因 |
+| approved_at | timestamptz | null | 审核通过时间 |
 | reject_reason | varchar(256) | null | 驳回原因 |
+| rejected_at | timestamptz | null | 驳回时间 |
 | exception_desc | varchar(512) | null | 异常说明 |
 | closed_at | timestamptz | null | 工单关闭时间（终态写入） |
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
+
+约束：
+
+- check(status in ('PENDING','PROCESSING','CANCEL_PENDING','CANCELLED','SHIPPED','EXCEPTION','COMPLETED'))
 
 索引：
 
@@ -579,6 +593,10 @@ token_usage JSONB 兼容键契约（多供应商统一）：
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
 
+约束：
+
+- check(read_status in ('UNREAD','READ'))
+
 索引：
 
 - idx_noti_user_created(user_id, created_at desc)
@@ -612,6 +630,13 @@ token_usage JSONB 兼容键契约（多供应商统一）：
 | trace_id | varchar(64) | not null | 链路标识 |
 | created_at | timestamptz | not null | 创建时间 |
 
+约束：
+
+- check(result in ('SUCCESS','FAIL'))
+- check(action_source in ('USER','AI_AGENT'))
+- check(execution_mode is null or execution_mode in ('AUTO','CONFIRM_1','CONFIRM_2','CONFIRM_3','MANUAL_ONLY'))
+- check(confirm_level is null or confirm_level in ('CONFIRM_1','CONFIRM_2','CONFIRM_3'))
+
 索引：
 
 - idx_log_module_action_time(module, action, created_at desc)
@@ -625,6 +650,10 @@ token_usage JSONB 兼容键契约（多供应商统一）：
 执行回执固化规则：
 1. 当 `action_source='AI_AGENT'` 且动作执行完成时，必须落库 `action_id/result_code/executed_at`。
 2. 当命中策略阻断（如 `POLICY_BLOCK`）时，`result_code` 必须落库；`executed_at` 可空。
+
+状态轨迹 detail 键契约：
+1. 当 `module='MATERIAL_ORDER'` 或 `module='TAG_ASSET'` 且 action 表示状态流转时，`detail` 必须包含 `from_status`、`to_status`。
+2. `detail.remark` 可选；时间线记录时间统一取 `sys_log.created_at`。
 
 ### 4.13 sys_config（治理配置）
 
@@ -679,6 +708,7 @@ AI Agent 策略键约定：
 | last_intervention_at | timestamptz | null | 最近人工干预时间 |
 | replay_reason | varchar(256) | null | 最近一次重放原因 |
 | replay_token | varchar(64) | null | 最近一次重放幂等键 |
+| replayed_at | timestamptz | null | 最近一次重放时间 |
 | created_at | timestamptz | not null，PK(联合)，分区键 | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
 
@@ -686,6 +716,7 @@ AI Agent 策略键约定：
 
 - pk_outbox(event_id, created_at)
 - 分区表上的唯一约束必须包含分区键 created_at。
+- check(phase in ('PENDING','DISPATCHING','SENT','RETRY','DEAD'))
 
 索引：
 
@@ -813,12 +844,19 @@ AI Agent 策略键约定：
 | 3.3.8/3.3.9 患者建档与更新 | avatar_url | patient_profile | photo_url（not null，禁止清空） |
 | 3.3.10 围栏配置 | fence_enabled/fence_center/fence_radius_m | patient_profile | fence_enabled/fence_center/fence_radius_m |
 | 3.4.1 创建工单 | quantity/apply_note/delivery_address | tag_apply_record | quantity/apply_note/delivery_address |
+| 3.4.6 标签作废 | status/void_reason/void_at | tag_asset | status/void_reason/void_at |
+| 3.4.7/3.4.8 工单审核通过 | status/approved_at | tag_apply_record | status/approved_at |
+| 3.4.9 取消驳回 | status/reject_reason/rejected_at | tag_apply_record | status/reject_reason/rejected_at |
 | 3.4.10 工单发货 | tracking_number/courier_name | tag_apply_record | tracking_number/courier_name |
 | 3.4.13 异常关闭 | status/closed_at | tag_apply_record | status/closed_at |
 | 3.4.15 批量入库标签 | tag_code/tag_type/batch_no | tag_asset | tag_code/tag_type/import_batch_no |
+| 3.4.21 工单时间线 | from_status/to_status/created_at | sys_log | detail.from_status/detail.to_status/created_at |
 | 3.4.24 物流轨迹查询 | - | - | 毕设版本暂不开放 |
+| 3.4.29 标签历史 | from_status/to_status/created_at | sys_log | detail.from_status/detail.to_status/created_at |
 | 3.5.5/3.5.6 记忆写入与分页 | note_id/kind/content/tags/created_at | patient_memory_note | note_id/kind/content/tags/created_at |
+| 3.5.3 AI 流式过程态 | stream_status | - | 过程态字段，仅传输层可观测，不直接落库 |
 | 3.5.11 会话归档 | status/archived_at | ai_session | status/archived_at |
+| 3.6.6 患者标签列表 | status/tag_status/lost_at | tag_asset | status/lost_at |
 | 3.8.4 审计日志查询 | module/action/user_id/trace_id/cursor | sys_log | module/action/operator_user_id/trace_id/created_at |
 | 3.8.6 数据导出 | export_type/window_start/window_end/reason/file_url | sys_log | detail.export_payload/detail.export_result |
 | 3.8.8 修改配置 | config_key/config_value/reason | sys_config | config_key/config_value/updated_reason |
@@ -828,7 +866,7 @@ AI Agent 策略键约定：
 | 1.11 Agent 能力包开关 | capability/policy 配置键 | sys_config | config_key/config_value/scope=ai_policy |
 | 3.8.11 读取配置 | scope | sys_config | scope |
 | 3.8.12 查询 DEAD 队列 | topic/partition_key/cursor/page_size | sys_outbox_log | phase='DEAD'、last_error、last_intervention_at、updated_at |
-| 3.8.13 DEAD 重放 | event_id+created_at/replay_reason/next_retry_at | sys_outbox_log / sys_log | phase( DEAD->RETRY )、replay_reason、replay_token、last_intervention_* |
+| 3.8.13 DEAD 重放 | event_id+created_at/replay_reason/next_retry_at/replayed_at | sys_outbox_log / sys_log | phase( DEAD->RETRY )、replay_reason、replay_token、replayed_at、last_intervention_* |
 | 3.9.1 通知列表 | 通知分页与筛选 | notification_inbox | user_id/type/read_status/created_at |
 | 3.9.2 单条已读 | notification_id | notification_inbox | read_status/read_at |
 | 3.9.3 全部已读 | before_time | notification_inbox | 批量更新 read_status/read_at |

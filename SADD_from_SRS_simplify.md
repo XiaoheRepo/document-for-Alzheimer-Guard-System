@@ -403,7 +403,7 @@ Agent 策略配置键（`sys_config.scope=ai_policy`）：
 | `agent.confirmation.policy` | 确认级别策略映射 |
 | `agent.manual_only.actions` | 人工专属接口白名单 |
 
-说明：上述策略键与能力包开关键共同构成 `ai_policy` 作用域下的完整 Agent 治理键集。
+说明：上述策略键与能力包开关键共同构成 `ai_policy` 作用域下的完整Agent治理键集。
 
 Function Calling 的 `action` 必须命中白名单，并通过现有业务接口执行（禁止内部旁路写）：
 

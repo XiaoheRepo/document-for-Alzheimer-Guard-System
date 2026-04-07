@@ -4347,6 +4347,8 @@ X-Trace-Id: trc_demo_20260406_001
 
 用途：管理员作废标签（物流异常、泄露风险等）。
 
+落库语义：`status/void_reason/void_at` 分别映射 `tag_asset.status/tag_asset.void_reason/tag_asset.void_at`。
+
 权限：ADMIN / SUPERADMIN。
 
 请求体：
@@ -4431,6 +4433,8 @@ X-Trace-Id: trc_demo_20260406_001
 ### 3.4.7 PUT /api/v1/admin/material/orders/{order_id}/approve
 
 用途：管理员审核通过申领工单。
+
+落库语义：`status/approved_at` 映射 `tag_apply_record.status/tag_apply_record.approved_at`。
 
 权限：ADMIN / SUPERADMIN。
 
@@ -4591,6 +4595,8 @@ X-Trace-Id: trc_demo_20260406_001
 ### 3.4.9 PUT /api/v1/admin/material/orders/{order_id}/cancel/reject
 
 用途：管理员驳回取消申请。
+
+落库语义：`status/reject_reason/rejected_at` 映射 `tag_apply_record.status/tag_apply_record.reject_reason/tag_apply_record.rejected_at`。
 
 权限：ADMIN / SUPERADMIN。
 
@@ -5584,6 +5590,7 @@ X-Trace-Id: trc_demo_20260406_001
 2. 存在 cursor 时按 Cursor 模式滚动翻页，响应 data 返回 next_cursor。
 3. 工单状态流转轨迹存储于 sys_log（module='MATERIAL_ORDER'），timeline_id 对应 sys_log.id。
 4. cursor 基于 (created_at, id) 复合排序编码，其中 id 即 timeline_id。
+5. `from_status/to_status` 必须来自 `sys_log.detail.from_status/sys_log.detail.to_status` 键契约。
 
 data.items 摘要结构：
 
@@ -6091,6 +6098,8 @@ X-Trace-Id: trc_demo_20260406_001
 | :--- | :--- | :---: | :--- |
 | page_no | int32 | 否 | >=1，默认 1 |
 | page_size | int32 | 否 | 1-100，默认 20 |
+
+轨迹来源约束：`from_status/to_status` 必须来自 `sys_log.detail.from_status/sys_log.detail.to_status` 键契约。
 
 data.items 摘要结构：
 
@@ -7624,6 +7633,11 @@ X-Trace-Id: trc_demo_20260406_001
 | :--- | :--- | :---: | :--- |
 | status | string | 否 | 默认 BOUND；支持 BOUND/LOST/VOID |
 
+命名说明：
+1. 查询参数 `status` 用于按标签状态过滤。
+2. 响应字段 `tag_status` 与过滤语义同源，映射 `tag_asset.status`；保留 `tag_status` 命名用于避免与工单 `status` 语义混淆。
+3. `lost_at` 映射 `tag_asset.lost_at`。
+
 响应 data：
 
 | 字段 | 类型 | 说明 |
@@ -9151,7 +9165,7 @@ AI Agent 执行策略：
 1. 仅允许 `phase=DEAD` 事件重放。
 2. 同 partition_key 若存在更早 DEAD 未修复事件，必须拒绝越序重放。
 3. 重放定位必须使用 `event_id + created_at`，以命中 Outbox 分区路由。
-4. 成功重放后写入 `last_intervention_by/last_intervention_at/replay_reason/replay_token`（`replay_token` 映射自 X-Request-Id）。
+4. 成功重放后写入 `last_intervention_by/last_intervention_at/replay_reason/replay_token/replayed_at`（`replay_token` 映射自 X-Request-Id）。
 5. 重放动作必须落审计并保留 trace_id。
 
 成功响应 data：

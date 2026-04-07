@@ -381,6 +381,8 @@ medical_history JSONB 键契约：
 - check((status not in ('BOUND','LOST')) or patient_id is not null)
 - check((status <> 'LOST') or lost_at is not null)
 - check((status <> 'VOID') or (void_at is not null and void_reason is not null))
+- check((reset_at is null) or status='UNBOUND')
+- check((recovered_at is null) or (status='BOUND' and patient_id is not null))
 
 索引：
 

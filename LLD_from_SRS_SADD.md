@@ -916,6 +916,8 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 - `status in ('UNBOUND','ALLOCATED','BOUND','LOST','VOID')`。
 - `status in ('BOUND','LOST')` 时，`patient_id` 必须非空。
 - `status='LOST'` 时，`lost_at` 必须非空；`status='VOID'` 时，`void_at` 与 `void_reason` 必须非空。
+- `reset_at` 非空时，`status` 必须为 `UNBOUND`。
+- `recovered_at` 非空时，`status` 必须为 `BOUND` 且 `patient_id` 必须非空。
 
 ### 5.8 tag_apply_record
 

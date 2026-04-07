@@ -904,6 +904,8 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 | void_reason | varchar(256) | null | 作废原因 |
 | lost_at | timestamptz | null | 挂失时间 |
 | void_at | timestamptz | null | 作废时间 |
+| reset_at | timestamptz | null | 管理员重置时间 |
+| recovered_at | timestamptz | null | 管理员恢复时间 |
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
 
@@ -1309,12 +1311,14 @@ AI 与 Agent 配置键白名单（用于模型/供应商/策略治理）：
 | BOUND | tag.lost.by_family | LOST | 授权监护人触发 |
 | BOUND | tag.void.by_admin | VOID | 管理端高危操作，需审计 |
 | UNBOUND | tag.void.by_admin | VOID | 质量缺陷等场景 |
+| VOID | tag.reset.by_admin | UNBOUND | 仅管理员 |
 | LOST | tag.reset.by_admin | UNBOUND | 仅管理员 |
-| VOID | tag.recover.by_admin | UNBOUND | 仅管理员 |
+| LOST | tag.recover.by_admin | BOUND | 仅管理员；需 patient_id 核验一致 |
 
 守卫要点：
 - tag.bind.by_family 必须校验三方一致：order.tag_code、payload.tag_code、扫码值。
 - 绑定成功后发布 tag.bound 触发工单自动收敛。
+- tag.reset.by_admin 必须写 `tag_asset.reset_at`；tag.recover.by_admin 必须写 `tag_asset.recovered_at`。
 
 ## 7. Outbox、幂等与防乱序设计
 

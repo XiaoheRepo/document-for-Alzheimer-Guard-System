@@ -5194,6 +5194,8 @@ X-Trace-Id: trc_demo_20260406_001
 
 用途：管理员重置标签（VOID/LOST -> UNBOUND）。
 
+落库语义：`status/reset_at` 映射 `tag_asset.status/tag_asset.reset_at`。
+
 权限：ADMIN / SUPERADMIN。
 
 请求体：
@@ -5273,6 +5275,8 @@ X-Trace-Id: trc_demo_20260406_001
 ### 3.4.17 POST /api/v1/admin/tags/{tag_code}/recover
 
 用途：管理员恢复标签（LOST -> BOUND）。
+
+落库语义：`status/patient_id/recovered_at` 映射 `tag_asset.status/tag_asset.patient_id/tag_asset.recovered_at`。
 
 权限：ADMIN / SUPERADMIN。
 

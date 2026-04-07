@@ -370,6 +370,8 @@ medical_history JSONB 键契约：
 | void_reason | varchar(256) | null | 作废原因 |
 | lost_at | timestamptz | null | 挂失时间 |
 | void_at | timestamptz | null | 作废时间 |
+| reset_at | timestamptz | null | 管理员重置时间 |
+| recovered_at | timestamptz | null | 管理员恢复时间 |
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
 
@@ -850,6 +852,8 @@ AI Agent 策略键约定：
 | 3.4.10 工单发货 | tracking_number/courier_name | tag_apply_record | tracking_number/courier_name |
 | 3.4.13 异常关闭 | status/closed_at | tag_apply_record | status/closed_at |
 | 3.4.15 批量入库标签 | tag_code/tag_type/batch_no | tag_asset | tag_code/tag_type/import_batch_no |
+| 3.4.16 标签重置 | status/reset_at | tag_asset | status/reset_at |
+| 3.4.17 标签恢复 | status/patient_id/recovered_at | tag_asset | status/patient_id/recovered_at |
 | 3.4.21 工单时间线 | from_status/to_status/created_at | sys_log | detail.from_status/detail.to_status/created_at |
 | 3.4.24 物流轨迹查询 | - | - | 毕设版本暂不开放 |
 | 3.4.29 标签历史 | from_status/to_status/created_at | sys_log | detail.from_status/detail.to_status/created_at |

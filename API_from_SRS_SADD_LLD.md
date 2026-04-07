@@ -3145,6 +3145,11 @@ X-Trace-Id: trc_demo_20260406_001
 | 401 | E_PRO_4012 | 鉴权失败或凭据缺失/失效 |
 | 404 | E_PRO_4041、E_PRO_4045 | 资源不存在或不可见 |
 | 409 | E_PRO_4098 | 状态冲突或重复提交 |
+
+落库语义：
+1. `transfer_state/cancel_reason/cancelled_at` 分别映射 `sys_user_patient.transfer_state/transfer_cancel_reason/transfer_cancelled_at`。
+2. `transfer_cancelled_by` 由鉴权主体补齐并同事务写入 `sys_user_patient.transfer_cancelled_by`。
+
 ### 3.3.6 DELETE /api/v1/patients/{patient_id}/guardians/{user_id}
 
 用途：移除家庭成员。
@@ -3206,6 +3211,9 @@ X-Trace-Id: trc_demo_20260406_001
 | 403 | E_PRO_4032 | 权限不足或越权访问 |
 | 404 | E_PRO_4041、E_PRO_4044 | 资源不存在或不可见 |
 | 409 | E_PRO_4099 | 状态冲突或重复提交 |
+
+落库语义：`relation_status=REVOKED` 映射 `sys_user_patient.relation_status`；`removed_at` 由该行 `updated_at` 回传。
+
 ### 3.3.7 GET /api/v1/users/lookup
 
 用途：邀请前置用户查询（按手机号或账号名换取 user_id）。
@@ -4542,6 +4550,8 @@ X-Trace-Id: trc_demo_20260406_001
 
 错误码：E_GOV_4030、E_MAT_4041、E_MAT_4094、E_REQ_4001。
 
+落库语义：`status/approved_at` 映射 `tag_apply_record.status/tag_apply_record.approved_at`，且 `status=CANCELLED` 时同事务写入 `tag_apply_record.closed_at`。
+
 请求示例：
 ```http
 PUT /api/v1/admin/material/orders/5001/cancel/approve HTTP/1.1
@@ -5840,6 +5850,8 @@ X-Trace-Id: trc_demo_20260406_001
 resource_link 语义：
 1. 统一入口 URL，格式为 `https://<domain>/r/{resource_token}`。
 2. 当前用于二维码直达；NFC 后续上线时复用同一 URL 语义，不新增并行入口协议。
+
+落库语义：`resource_link` 映射 `tag_apply_record.resource_link`；`resource_token_expire_at` 与 `status` 由令牌服务运行时计算回传，不作为持久化状态列。
 
 权限：FAMILY（需患者授权）。
 

@@ -200,6 +200,7 @@ medical_history JSONB 键契约：
 - check(transfer_state in ('NONE','PENDING_CONFIRM','ACCEPTED','REJECTED','CANCELLED','EXPIRED'))
 - check((transfer_state='ACCEPTED' and transfer_confirmed_at is not null) or (transfer_state<>'ACCEPTED' and transfer_confirmed_at is null))
 - check((transfer_state='REJECTED' and transfer_rejected_at is not null and transfer_reject_reason is not null) or (transfer_state<>'REJECTED' and transfer_rejected_at is null and transfer_reject_reason is null))
+- check((transfer_state='CANCELLED' and transfer_cancelled_by is not null and transfer_cancelled_at is not null and transfer_cancel_reason is not null) or (transfer_state<>'CANCELLED' and transfer_cancelled_by is null and transfer_cancelled_at is null and transfer_cancel_reason is null))
 - uq_transfer_pending(patient_id) where transfer_state='PENDING_CONFIRM'
 - uq_transfer_request_id(transfer_request_id) where transfer_request_id is not null
 - uq_primary_guardian_per_patient(patient_id) where relation_role='PRIMARY_GUARDIAN' and relation_status='ACTIVE'
@@ -315,6 +316,8 @@ medical_history JSONB 键契约：
 - check((assignee_user_id is null and assigned_at is null) or (assignee_user_id is not null and assigned_at is not null))
 - check((suspect_flag=false and review_status is null) or (suspect_flag=true and review_status in ('PENDING','OVERRIDDEN','REJECTED')))
 - check(((review_status in ('OVERRIDDEN','REJECTED')) and reviewed_at is not null) or ((review_status is null or review_status='PENDING') and reviewed_at is null))
+- check((review_status='OVERRIDDEN' and override=true and override_reason is not null) or (review_status<>'OVERRIDDEN' and override=false and override_reason is null))
+- check((review_status='REJECTED' and rejected_by is not null and reject_reason is not null) or (review_status<>'REJECTED' and rejected_by is null and reject_reason is null))
 
 坐标入库规则：
 
@@ -432,6 +435,10 @@ medical_history JSONB 键契约：
 - check((approved_at is null) or status in ('PROCESSING','CANCEL_PENDING','CANCELLED','SHIPPED','EXCEPTION','COMPLETED'))
 - check((rejected_at is null and reject_reason is null) or (rejected_at is not null and reject_reason is not null))
 - check((status in ('CANCELLED','COMPLETED') and closed_at is not null) or (status in ('PENDING','PROCESSING','CANCEL_PENDING','SHIPPED','EXCEPTION') and closed_at is null))
+
+补充说明：
+1. `resource_token_expire_at` 与资源链 `status` 为令牌运行时属性，不作为 `tag_apply_record` 固定列。
+2. 资源链状态由发码服务按令牌有效期实时计算并回传。
 
 索引：
 
@@ -857,19 +864,22 @@ AI Agent 策略键约定：
 | 3.1.15 告警列表 | alert_id/level/type/title/created_at | notification_inbox | type/level/title/content/related_task_id/created_at |
 | 3.1.16 notify/retry | channels（仅 IN_APP/PUSH） | notification_inbox / sys_log | type、level、trace_id、审计记录 |
 | 3.2.8/3.2.9 线索详情 | source_type/suspect_reason/review_status | clue_record | source_type/suspect_reason/review_status |
-| 3.2.6/3.2.7 线索复核处置 | review_status/reviewed_at/reject_reason | clue_record | review_status/reviewed_at/override_reason/reject_reason |
+| 3.2.6/3.2.7 线索复核处置 | review_status/reviewed_at/override/override_reason/reject_reason | clue_record | review_status/reviewed_at/override/override_reason/rejected_by/reject_reason |
 | 3.2.10/3.2.12 线索复核队列与分配 | review_status/assignee_user_id/assigned_at/risk_score | clue_record | review_status/assignee_user_id/assigned_at/risk_score |
 | 3.2.13 发起补证请求 | - | - | 毕设版本暂不开放 |
 | 3.3.1/3.3.12 监护邀请创建与查询 | invite_id/status/expire_at | guardian_invitation | invite_id/status/expire_at/invitee_user_id |
 | 3.3.2 监护邀请确认 | status/reject_reason | guardian_invitation | status/accepted_at/rejected_at/reject_reason |
 | 3.3.3 主监护转移发起 | transfer_request_id/transfer_state/requested_at/expire_at | sys_user_patient | transfer_request_id/transfer_state/transfer_requested_at/transfer_expire_at |
 | 3.3.4 主监护转移确认 | transfer_state/confirmed_at/reject_reason | sys_user_patient | transfer_state/transfer_confirmed_at/transfer_rejected_at/transfer_reject_reason |
+| 3.3.5 主监护转移撤销 | transfer_state/cancel_reason/cancelled_at | sys_user_patient | transfer_state/transfer_cancelled_by/transfer_cancel_reason/transfer_cancelled_at |
+| 3.3.6 移除家庭成员 | relation_status/removed_at | sys_user_patient | relation_status/updated_at（removed_at 由 updated_at 回传） |
 | 3.3.8/3.3.9 患者建档与更新 | blood_type/chronic_diseases/allergy_notes | patient_profile | medical_history(JSONB) |
 | 3.3.8/3.3.9 患者建档与更新 | avatar_url | patient_profile | photo_url（not null，禁止清空） |
 | 3.3.10 围栏配置 | fence_enabled/fence_center/fence_radius_m | patient_profile | fence_enabled/fence_center/fence_radius_m |
 | 3.4.1 创建工单 | quantity/apply_note/delivery_address | tag_apply_record | quantity/apply_note/delivery_address |
 | 3.4.6 标签作废 | status/void_reason/void_at | tag_asset | status/void_reason/void_at |
-| 3.4.7/3.4.8 工单审核通过 | status/approved_at | tag_apply_record | status/approved_at |
+| 3.4.7 工单审核通过 | status/approved_at | tag_apply_record | status/approved_at |
+| 3.4.8 取消审核通过 | status/approved_at | tag_apply_record | status/approved_at/closed_at |
 | 3.4.9 取消驳回 | status/reject_reason/rejected_at | tag_apply_record | status/reject_reason/rejected_at |
 | 3.4.10 工单发货 | tracking_number/courier_name | tag_apply_record | tracking_number/courier_name |
 | 3.4.13 异常关闭 | status/closed_at | tag_apply_record | status/closed_at |
@@ -879,6 +889,7 @@ AI Agent 策略键约定：
 | 3.4.17 标签恢复 | status/patient_id/recovered_at | tag_asset | status/patient_id/recovered_at |
 | 3.4.21 工单时间线 | from_status/to_status/created_at | sys_log | detail.from_status/detail.to_status/created_at |
 | 3.4.24 物流轨迹查询 | - | - | 毕设版本暂不开放 |
+| 3.4.25 资源链读取 | resource_link/resource_token_expire_at/status | tag_apply_record + token 服务 | resource_link（落库）/token.expire_at（运行时）/status（运行时计算，不持久化） |
 | 3.4.29 标签历史 | from_status/to_status/created_at | sys_log | detail.from_status/detail.to_status/created_at |
 | 3.5.5/3.5.6 记忆写入与分页 | note_id/kind/content/tags/created_at | patient_memory_note | note_id/kind/content/tags/created_at |
 | 3.5.3 AI 流式过程态 | stream_status | - | 过程态字段，仅传输层可观测，不直接落库 |

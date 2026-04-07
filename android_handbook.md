@@ -39,7 +39,7 @@
 | :--- | :--- | :--- | :--- | :--- |
 | `FR-CLUE-008`（扫码动态路由） | 根据标签状态执行正确页面路由，不做本地猜测兜底 | `PUB-01`、`PUB-03`、`PUB-04` | `GET /r/{resource_token}` | `ACC-FE-001` |
 | `FR-CLUE-003` + `BR-001`（匿名兜底准入） | 手动录入仅提交必要字段并执行冷却倒计时 | `PUB-02` | `POST /api/v1/public/clues/manual-entry` | `ACC-FE-002` |
-| `FR-CLUE-005`（存疑线索闭环） | 线索状态展示与复核结果刷新闭环，不出现悬挂态 | `CLUE-01`、`ADM-03` | `GET /api/v1/clues/{clue_id}` | `ACC-FE-003` |
+| `FR-CLUE-005`（存疑线索闭环） | Android 侧消费复核结果回流并刷新线索终态，不出现悬挂态 | `CLUE-01` | `GET /api/v1/clues/{clue_id}` | `ACC-FE-003` |
 | `FR-TASK-001`（唯一进行中任务） | 新建任务前后正确处理冲突并跳转已有任务 | `TASK-04`、`TASK-02` | `POST /api/v1/rescue/tasks` | `ACC-FE-004` |
 | `FR-TASK-003/004`（任务关闭） | `FALSE_ALARM` 强制原因校验，终态不可重复提交 | `TASK-05` | `POST /api/v1/rescue/tasks/{task_id}/close` | `ACC-FE-005` |
 | `FR-PRO-005/006` + `BR-006`（主监护转移） | 仅允许目标受方确认；成员移除后隐藏失效转移动作 | `GUA-01` | 监护转移相关接口 | `ACC-FE-006` |
@@ -265,16 +265,14 @@ class TraceAndIdempotencyInterceptor(
 
 端边界说明：
 1. 本章仅定义 Android 原生客户端的匿名线索上报实现。
-2. Web/H5/小程序端的上报交互不在本手册范围。
-3. `GET /r/{resource_token}` 与 `GET /p/{short_code}/...` 作为服务端路由入口使用，Android 仅消费路由结果并映射到本地页面，不在 WebView 完成核心上报。
+2. 仅覆盖 Android 原生页面与接口调用，不包含其他端实现。
+3. 扫码后由 `GET /r/{resource_token}` 返回路由结果，客户端按结果进入 `PUB-03` 或 `PUB-04`。
 
 ### 8.1 关键接口
 
 1. `GET /r/{resource_token}`
 2. `POST /api/v1/public/clues/manual-entry`
-3. `GET /p/{short_code}/clues/new`
-4. `GET /p/{short_code}/emergency/report`
-5. `POST /api/v1/clues/report`
+3. `POST /api/v1/clues/report`
 
 ### 8.2 客户端强约束
 
@@ -471,21 +469,20 @@ fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
 
 1. 匿名域入口：扫码深链或短码手动录入后进入匿名线索上报链路。
 2. 家庭域入口：登录成功后进入家庭工作台，底部导航包含任务、患者、通知、我的。
-3. 管理域入口：ADMIN 或 SUPERADMIN 登录后进入治理工作台，底部导航包含治理、审计、配置。
-4. 超管能力入口：仅 SUPERADMIN 在治理工作台显示“系统治理”入口。
+3. 管理与超管治理后台不在本手册范围。
 
 ### 14.3 全量页面范围
 
-当前全量规范覆盖 38 个主页面（不含通用弹层、底部抽屉、系统对话框）。
+当前全量规范覆盖 Android 交付 29 个主页面（不含通用弹层、底部抽屉、系统对话框）。
 
 | 功能域 | 页面数 |
 | :--- | :---: |
 | 匿名与鉴权 | 9 |
 | 任务与线索 | 6 |
 | 患者、监护与标签 | 6 |
-| 物资运营 | 5 |
+| 物资运营 | 4 |
 | AI 协同 | 4 |
-| 管理与超管治理 | 8 |
+| Android 交付合计 | 29 |
 
 ### 14.4 匿名与鉴权域页面（9 页）
 
@@ -493,8 +490,8 @@ fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
 | :--- | :--- | :--- | :--- | :--- |
 | PUB-01 | 扫码解析页 | GET /r/{resource_token} | 全屏状态页（解析中/成功跳转/失败） | 启动即请求；成功按路由结果映射到本地页面；失败显示重试与手动录入入口 |
 | PUB-02 | 手动录入页 | POST /api/v1/public/clues/manual-entry | 顶部说明 + short_code/pin/captcha 表单 + 提交按钮 | 校验通过前禁用提交；429 按 Retry-After 倒计时；成功缓存匿名令牌并跳转上报页 |
-| PUB-03 | 匿名线索上报页 | GET /p/{short_code}/clues/new（路由判定），POST /api/v1/clues/report | 地图卡 + 定位信息 + 描述输入 + 照片区 + 提交按钮 | 提交时自动带 X-Anonymous-Token；成功跳回执页；E_CLUE_4012 触发重新扫码 |
-| PUB-04 | 匿名紧急上报页 | GET /p/{short_code}/emergency/report（路由判定），POST /api/v1/clues/report | 红色风险提示条 + 一键定位 + 快速提交区 | 默认聚焦“立即上报”；失败保留表单；429 显示冷却提示 |
+| PUB-03 | 匿名线索上报页 | POST /api/v1/clues/report | 地图卡 + 定位信息 + 描述输入 + 照片区 + 提交按钮 | 提交时自动带 X-Anonymous-Token；成功跳回执页；E_CLUE_4012 触发重新扫码 |
+| PUB-04 | 匿名紧急上报页 | POST /api/v1/clues/report | 红色风险提示条 + 一键定位 + 快速提交区 | 默认聚焦“立即上报”；失败保留表单；429 显示冷却提示 |
 | PUB-05 | 匿名上报回执页 | POST /api/v1/clues/report（结果页） | 回执卡 + 时间 + 状态 + 继续上报入口 | 不展示患者隐私字段；支持复制 trace_id 反馈客服 |
 | AUTH-01 | 登录页 | POST /api/v1/auth/login | Logo 区 + 用户名/密码 + 登录按钮 + 去注册入口 | 防重复提交；401 提示并保留输入；成功写会话并进入 HOME-01 |
 | AUTH-02 | 注册页 | POST /api/v1/auth/register | 顶栏 + 注册表单 + 注册按钮 | 实时校验用户名与密码；E_AUTH_4091 就地提示“用户名已存在” |
@@ -523,7 +520,7 @@ fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
 | GUA-01 | 监护管理页 | GET /guardians, /invitations, /transfers, DELETE /guardians/{user_id} | 成员列表 Tab + 邀请记录 Tab + 转移记录 Tab | 支持发起邀请、移除成员、查看转移状态；高风险操作二次确认 |
 | TAG-01 | 标签管理页 | GET /patients/{patient_id}/tags, /tags/{tag_code}, /history, POST /tags/bind, /lost | 标签状态卡 + 历史时间线 + 操作按钮区 | BIND/LOST 按状态控制可见操作；状态变化后刷新详情与历史 |
 
-### 14.7 物资运营域页面（5 页）
+### 14.7 物资运营域页面（4 页）
 
 | 页面 ID | 页面名称 | 关键接口 | 布局规范 | 交互规范 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -531,7 +528,6 @@ fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
 | ORD-02 | 新建申领页 | POST /api/v1/material/orders | 地址信息 + 标签类型 + 数量 + 备注 + 提交按钮 | 提交后跳工单详情；失败保留输入可重试 |
 | ORD-03 | 工单详情页 | GET /material/orders/{order_id}, POST /cancel, POST /confirm | 摘要卡 + 状态时间线 + 物流区 + 操作区 | FAMILY 仅可执行取消与签收；按钮可见性按状态机控制 |
 | ORD-04 | 物流轨迹页 | GET /tracking, /resource-link | 物流节点列表 + 地图路线 + 异常提示条 | 节点按时间倒序；异常状态高亮并给联系客服入口 |
-| ORD-05 | 物资治理页（管理） | GET /admin/material/orders*, PUT /approve/ship/reship/* | 顶栏筛选 + 工单表格列表 + 详情抽屉 + 审批操作栏 | 审批动作强制填写备注；提交成功后写审计并刷新当前行 |
 
 ### 14.8 AI 协同域页面（4 页）
 
@@ -542,18 +538,11 @@ fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
 | AI-03 | 会话详情与配额页 | GET /api/v1/ai/sessions/{session_id}, /quota, POST /archive | 会话元信息卡 + 配额进度条 + 归档操作区 | 配额低于阈值高亮；归档需二次确认 |
 | AI-04 | 记忆笔记页 | POST/GET /api/v1/patients/{patient_id}/memory-notes | 笔记列表 + 新增输入区 + 标签过滤 | 新增后乐观插入列表；失败回滚并提示重试 |
 
-### 14.9 管理与超管治理页面（8 页）
+### 14.9 端边界声明（Android-only）
 
-| 页面 ID | 页面名称 | 关键接口 | 布局规范 | 交互规范 |
-| :--- | :--- | :--- | :--- | :--- |
-| ADM-01 | 运营看板页 | GET /admin/dashboard/metrics, /rescue/tasks/statistics, /admin/clues/statistics | 指标卡片网格 + 趋势图 + 告警摘要 | 指标支持时间窗切换；异常指标跳治理页 |
-| ADM-02 | 任务治理页 | GET /admin/rescue/tasks, /admin/rescue/tasks/{task_id}, /audit | 列表区 + 详情抽屉 + 审计时间线 | 支持强制关闭与通知补偿；高风险操作二次确认 |
-| ADM-03 | 线索复核页 | GET /admin/clues/review/queue, /admin/clues/{clue_id}, POST /override, /reject, /assign, /request-evidence | 队列列表 + 详情面板 + 复核操作区 | 复核动作需填写理由；操作后自动流转下一条待办 |
-| ADM-04 | 标签与物资治理页 | GET /admin/tags*, POST /admin/tags/import, /allocate, /release, /reset, /recover, PUT /void | 标签列表 + 详情抽屉 + 批量操作工具条 | 批量操作支持进度反馈与失败明细导出 |
-| ADM-05 | 用户治理页 | GET /admin/users, PUT /admin/users/{user_id}/status, /password:reset | 用户表格 + 过滤器 + 操作弹窗 | 封禁/解封即时刷新；密码重置需确认与审计备注 |
-| ADM-06 | 审计与安全页 | GET /admin/logs, /admin/metrics/security | 审计日志列表 + 安全指标卡 + 风险事件面板 | 支持按 trace_id 检索全链路记录 |
-| ADM-07 | 系统配置页 | GET /admin/config, PUT /admin/super/config | 配置分组表单 + 变更预览 + 发布按钮 | 配置变更前后 diff 展示；发布失败自动回滚展示 |
-| ADM-08 | 死信与超管操作页 | GET /admin/super/outbox/dead, POST /replay, /export-data, /logs/purge, /super/rescue/tasks/{task_id}/force-close | 死信列表 + 详情抽屉 + 超管操作卡片 | replay 前校验事件状态；导出与清理操作必须二次确认 + 审计 |
+1. 本手册仅覆盖 Android 客户端页面与交互，不包含后台管理端页面。
+2. 管理与超管治理能力由独立后台文档维护，Android 仅消费其结果回流状态。
+3. 匿名线索上报仅描述 Android 原生页面，不包含 H5 页面交互约束。
 
 ### 14.10 通用交互与状态机规则
 
@@ -574,7 +563,6 @@ fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
 4. 监护管理流程：PAT-01 -> GUA-01 -> 邀请或转移 -> GUA-01 刷新。
 5. 物资流程：ORD-02 -> ORD-03 -> ORD-04 -> ORD-03（签收/取消）。
 6. AI 流程：AI-01 -> AI-02 -> AI-03 -> AI-01。
-7. 管理复核流程：ADM-03 队列 -> 详情 -> override/reject -> 队列下一条。
 
 ### 14.12 页面开发完成定义（UI DoD）
 
@@ -655,7 +643,7 @@ fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
 | :--- | :--- | :--- | :--- |
 | 图片加载 | `io.coil-kt:coil-compose` | core-ui-adapter | 仅用于图片渲染与缓存，不处理业务鉴权 |
 | 动画渲染 | `com.airbnb.android:lottie-compose` | core-ui-adapter | 仅用于状态动画与引导动画 |
-| 图表可视化 | `com.patrykandpatrick.vico:compose-m3` | core-ui-adapter | 仅用于管理看板趋势图与统计图 |
+| 图表可视化 | `com.patrykandpatrick.vico:compose-m3` | core-ui-adapter | 仅用于任务与通知趋势图等客户端统计展示 |
 | 地图能力 | 高德 Android SDK（Map + Location） | core-ui-adapter | 仅用于地图展示与定位，不承载业务状态判断 |
 
 说明：
@@ -742,13 +730,14 @@ class CoilAppImage : AppImage {
 4. 已补齐 UI 自动化测试与性能基线对比结果。
 5. 已更新手册白名单与版本记录。
 
-### 14.15 字段级交互约束表（38 页全量）
+### 14.15 字段级交互约束表（Android 交付 29 页）
 
 适用约束：
 1. 表内“典型错误码”必须与 `API_from_SRS_SADD_LLD.md` 对齐。
 2. 所有写请求默认附带 `X-Request-Id` 与 `X-Trace-Id`；鉴权接口默认附带 `Authorization`（匿名接口除外）。
 3. 所有 ID 入参与路径参数统一按“十进制字符串”处理，不允许前端用浮点数中转。
 4. 空态/异常态必须映射到 Loading、Empty、Error、Content 四态，不允许仅用 Toast 兜底。
+5. 本章不包含后台管理端（`ADM-*`）页面字段约束。
 
 #### 14.15.1 匿名与鉴权域（9 页）
 
@@ -903,7 +892,7 @@ class CoilAppImage : AppImage {
 | `tag_code`、`patient_id` | 是 | 标签编码非空；患者 ID 合法 | `E_MAT_4044`、`E_PRO_4041`、`E_REQ_4005` | 无标签时展示“去申领/绑定”空态 |
 | 操作参数：`resource_token`、`lost_reason`、`void_reason` | 条件必填 | `LOST/VOID` 动作需原因；资源令牌格式合法 | `E_MAT_4002`、`E_MAT_4004`、`E_MAT_4005`、`E_MAT_4098`、`E_MAT_4223`、`E_PRO_4092`、`E_PRO_4093`、`E_PRO_4031` | 状态冲突时刷新标签详情并锁定非法动作 |
 
-#### 14.15.4 物资运营域（5 页）
+#### 14.15.4 物资运营域（4 页）
 
 #### ORD-01 工单列表页
 
@@ -932,13 +921,6 @@ class CoilAppImage : AppImage {
 | :--- | :---: | :--- | :--- | :--- |
 | `order_id` | 是 | 十进制字符串 | `E_MAT_4041`、`E_REQ_4005` | 无轨迹时展示“物流暂未同步”空态 |
 | `tracking_cursor`、`resource_link` | 否 | 游标透传；资源链接签名合法 | `E_MAT_4223`、`E_MAT_5003`、`E_GOV_4030` | 链接失效时提示刷新并回到工单详情 |
-
-#### ORD-05 物资治理页（管理）
-
-| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
-| :--- | :---: | :--- | :--- | :--- |
-| `order_id/tag_code`、`action` | 是 | 操作枚举仅允许 `approve/ship/reship/exception-close` | `E_MAT_4041`、`E_MAT_4044`、`E_MAT_4091`、`E_MAT_4092` | 操作后失败需保留当前筛选与滚动位置 |
-| `tracking_no`、`reason`、`remark` | 条件必填 | 发货需物流单号；异常/驳回需原因 | `E_MAT_4222`、`E_MAT_4224`、`E_MAT_4095`、`E_GOV_4030`、`E_REQ_4001` | 失败项高亮并支持逐条重试 |
 
 #### 14.15.5 AI 协同域（4 页）
 
@@ -970,70 +952,19 @@ class CoilAppImage : AppImage {
 | `patient_id` | 是 | 十进制字符串 | `E_PRO_4041`、`E_PRO_4030`、`E_REQ_4005` | 无笔记显示“添加首条记忆笔记”空态 |
 | `note_content`、`tags` | 是/否 | 内容非空且长度受限；标签数量受限 | `E_AI_4003`、`E_REQ_4001` | 写入失败回滚乐观插入并提示重试 |
 
-#### 14.15.6 管理与超管治理域（8 页）
+#### 14.15.6 端边界补充（剥离 Web/H5 页面）
 
-#### ADM-01 运营看板页
+1. 本章仅覆盖 Android 交付 29 页字段约束。
+2. 管理与超管治理页面（`ADM-*`）字段约束由独立后台文档维护。
+3. 匿名线索上报字段仅描述 Android 原生页面，不包含 H5 页面。
 
-| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
-| :--- | :---: | :--- | :--- | :--- |
-| `time_range` | 否 | 枚举：`today/7d/30d/custom` | `E_REQ_4005` | 指标为空时展示“暂无统计数据” |
-| `metric_scope` | 否 | 角色范围合法 | `E_GOV_4011`、`E_GOV_4030` | 查询失败显示可重试卡片，不清空其余卡片 |
+### 14.16 字段级约束完成定义（DoD）
 
-#### ADM-02 任务治理页
-
-| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
-| :--- | :---: | :--- | :--- | :--- |
-| `task_id`、筛选参数 | 是/否 | 任务 ID 合法；筛选枚举受控 | `E_TASK_4041`、`E_REQ_4005` | 无任务时显示治理空态与筛选清除入口 |
-| 操作参数：`force_close/retry_notify` + `reason` | 条件必填 | 高风险动作需二次确认与原因 | `E_GOV_4030`、`E_GOV_4032`、`E_TASK_4093`、`E_GOV_5002`、`E_REQ_4001` | 失败后保留抽屉上下文，避免丢单 |
-
-#### ADM-03 线索复核页
-
-| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
-| :--- | :---: | :--- | :--- | :--- |
-| `clue_id`、`assignee_user_id` | 是/否 | 线索 ID 合法；分配对象合法 | `E_CLUE_4043`、`E_GOV_4030`、`E_REQ_4005` | 队列空态展示“当前无待复核线索” |
-| `override`、`override_reason`、`reject_reason` | 条件必填 | `override` 布尔；通过/驳回原因长度受限 | `E_CLUE_4008`、`E_CLUE_4009`、`E_CLUE_4010`、`E_CLUE_5011`、`E_CLUE_5012` | 提交失败保留当前审核内容并允许重试 |
-
-#### ADM-04 标签与物资治理页
-
-| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
-| :--- | :---: | :--- | :--- | :--- |
-| `tag_code`、`order_id`、`action` | 是 | 标签/工单 ID 合法；动作枚举受控 | `E_MAT_4044`、`E_MAT_4041`、`E_MAT_4098` | 无结果时展示“调整筛选条件”空态 |
-| 批量与治理参数：`void_reason`、`import_file`、`remark` | 条件必填 | 作废需原因；批量文件格式与大小受限 | `E_MAT_4005`、`E_PRO_4031`、`E_PRO_4093`、`E_REQ_4001` | 批量失败返回失败明细并支持导出 |
-
-#### ADM-05 用户治理页
-
-| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
-| :--- | :---: | :--- | :--- | :--- |
-| `user_id`、`status` | 是 | 状态仅允许 `NORMAL/BANNED` | `E_USR_4003`、`E_USR_4041`、`E_GOV_4030`、`E_REQ_4005` | 更新失败回滚开关状态 |
-| `password_reset` 载荷 | 条件必填 | 新密码满足强度；超管权限必需 | `E_USR_4002`、`E_GOV_4032`、`E_GOV_4231`、`E_REQ_4001` | 重置失败保留弹窗并给出可修复提示 |
-
-#### ADM-06 审计与安全页
-
-| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
-| :--- | :---: | :--- | :--- | :--- |
-| `trace_id`、`event_type`、`operator` | 否 | 查询字段长度与枚举合法 | `E_REQ_4005` | 无结果显示“未检索到审计记录” |
-| `cursor`、`page_size` | 否 | Cursor 透传；页大小受限 | `E_GOV_4011`、`E_GOV_4030` | 接口异常时保留筛选条件便于复查 |
-
-#### ADM-07 系统配置页
-
-| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
-| :--- | :---: | :--- | :--- | :--- |
-| `config_key`、`config_value` | 是 | 键名在白名单；值类型与范围合法 | `E_REQ_4001`、`E_GOV_4226` | 配置读取为空时展示默认值与说明 |
-| `dry_run`、`X-Confirm-Level` | 条件必填 | 高风险发布要求 `CONFIRM_2/3` | `E_GOV_4032`、`E_GOV_4097`、`E_GOV_4231`、`E_GOV_5002` | 预检查失败展示 diff 与失败原因，不执行发布 |
-
-#### ADM-08 死信与超管操作页
-
-| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
-| :--- | :---: | :--- | :--- | :--- |
-| `topic`、`page_size`、`event_id` | 条件必填 | Topic 枚举合法；`event_id` 非空 | `E_GOV_4046`、`E_GOV_4096`、`E_REQ_4001` | 无死信时展示健康态空页面 |
-| 超管操作参数：`task_id`、`confirm_reason`、`action` | 条件必填 | 强制关闭/回放/清理均需确认原因 | `E_GOV_4032`、`E_GOV_4231`、`E_TASK_4041`、`E_TASK_4093`、`E_GOV_5002` | 执行失败保留操作上下文并记录审计追踪号 |
-
-### 14.16 38 页字段级约束完成定义（DoD）
-
-1. 38 个页面均有“字段、校验、错误码、空态/异常态”四要素。
-2. 任一页面新增写交互时，必须同步补齐本章对应表项。
-3. 页面实现、测试用例、埋点事件中的字段命名必须与本章一致。
-4. 联调发现错误码偏差时，先修正实现，再更新本章并记录变更。
+1. Android 交付 29 页均有“字段、校验、错误码、空态/异常态”四要素。
+2. Android 交付范围 29 页必须全部实现并通过测试。
+3. 任一页面新增写交互时，必须同步补齐本章对应表项。
+4. 页面实现、测试用例、埋点事件中的字段命名必须与本章一致。
+5. 联调发现错误码偏差时，先修正实现，再更新本章并记录变更。
 
 ## 15. 安全与隐私规范
 

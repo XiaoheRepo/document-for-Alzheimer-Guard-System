@@ -220,10 +220,12 @@ export default api
 
 1. `GET /api/v1/admin/clues/{clue_id}`
 2. `GET /api/v1/admin/clues/review/queue`
-3. `POST /api/v1/admin/clues/{clue_id}/assign`
-4. `POST /api/v1/admin/clues/{clue_id}/request-evidence`（毕设版本仅保留审计）
-5. `GET /api/v1/admin/clues/statistics`
-6. `GET /api/v1/admin/clues/suspected`
+3. `POST /api/v1/clues/{clue_id}/override`
+4. `POST /api/v1/clues/{clue_id}/reject`
+5. `POST /api/v1/admin/clues/{clue_id}/assign`
+6. `POST /api/v1/admin/clues/{clue_id}/request-evidence`（毕设版本仅保留审计）
+7. `GET /api/v1/admin/clues/statistics`
+8. `GET /api/v1/admin/clues/suspected`
 
 #### 4.4.3 物资与标签治理
 
@@ -439,14 +441,14 @@ export const useAdminPrefStore = defineStore('admin-pref', {
 
 | 页面 ID | 路由 | 核心 API |
 | :--- | :--- | :--- |
-| ADM-01 | `/admin/dashboard` | `/admin/dashboard/metrics`、`/admin/clues/statistics`、`/admin/metrics/security` |
-| ADM-02 | `/admin/tasks` | `/admin/rescue/tasks*`、`/admin/rescue/tasks/{task_id}/notify/retry` |
-| ADM-03 | `/admin/clues/review` | `/admin/clues/review/queue`、`/admin/clues/{clue_id}`、`/assign` |
-| ADM-04 | `/admin/material` | `/admin/material/orders*`、`/admin/tags*` 及治理动作接口 |
-| ADM-05 | `/admin/users` | `/admin/users`、`/admin/users/{user_id}/status`、`/password:reset` |
-| ADM-06 | `/admin/audit` | `/admin/logs`、`/admin/metrics/security` |
-| ADM-07 | `/admin/config` | `/admin/config`、`/admin/super/config` |
-| ADM-08 | `/admin/dead-letter` | `/admin/super/outbox/dead*`、`/replay`、`/super/rescue/tasks/{task_id}/force-close` |
+| ADM-01 | `/admin/dashboard` | `/api/v1/admin/dashboard/metrics`、`/api/v1/admin/clues/statistics`、`/api/v1/admin/metrics/security` |
+| ADM-02 | `/admin/tasks` | `/api/v1/admin/rescue/tasks`、`/api/v1/admin/rescue/tasks/{task_id}`、`/api/v1/admin/rescue/tasks/{task_id}/notify/retry` |
+| ADM-03 | `/admin/clues/review` | `/api/v1/admin/clues/review/queue`、`/api/v1/admin/clues/{clue_id}`、`/api/v1/clues/{clue_id}/override`、`/api/v1/clues/{clue_id}/reject`、`/api/v1/admin/clues/{clue_id}/assign` |
+| ADM-04 | `/admin/material` | `/api/v1/admin/material/orders*`、`/api/v1/admin/tags*` 及治理动作接口 |
+| ADM-05 | `/admin/users` | `/api/v1/admin/users`、`/api/v1/admin/users/{user_id}/status`、`/api/v1/admin/users/{user_id}/password:reset` |
+| ADM-06 | `/admin/audit` | `/api/v1/admin/logs`、`/api/v1/admin/metrics/security` |
+| ADM-07 | `/admin/config` | `/api/v1/admin/config`、`/api/v1/admin/super/config` |
+| ADM-08 | `/admin/dead-letter` | `/api/v1/admin/super/outbox/dead*`、`/api/v1/admin/super/outbox/dead/{event_id}/replay`、`/api/v1/admin/super/rescue/tasks/{task_id}/force-close` |
 
 ### 9.2 ADM-01 运营看板
 
@@ -467,7 +469,9 @@ export const useAdminPrefStore = defineStore('admin-pref', {
 交互规则：
 1. 队列按风险分排序，默认聚焦最高风险待办。
 2. 分配动作必须校验 `assignee_user_id`，成功后队列与详情同步刷新。
-3. `request-evidence` 入口保留但默认禁用，提示“当前版本仅记录治理审计”。
+3. 复核终结动作必须支持 `override` 与 `reject`，提交前强制二次确认并校验原因字段。
+4. `override/reject` 成功后，当前线索应从待复核队列移除并进入终态（`OVERRIDDEN`/`REJECTED`）。
+5. `request-evidence` 入口保留但默认禁用，提示“当前版本仅记录治理审计”。
 
 ### 9.5 ADM-04 标签与物资治理
 
@@ -698,10 +702,33 @@ FE --> Admin: 展示成功并刷新审计流
 | :--- | :---: | :--- | :--- | :--- |
 | `page_no`、`page_size`、`assignee_user_id` | 否 | 分页参数合法；`assignee_user_id` 为十进制字符串 | `E_REQ_4005` | 队列空态展示“当前无待复核线索” |
 | `clue_id`（Path） | 是 | 十进制字符串 | `E_CLUE_4043` | 线索不存在时清空详情面板并跳下一条 |
+| `override`、`override_reason`（通过复核） | 是 | `override=true`；`override_reason` 长度 `5-256` | `E_CLUE_4008`、`E_CLUE_4009`、`E_CLUE_5011`、`E_GOV_4030` | 通过失败时保留当前详情并允许修正后重试 |
+| `reject_reason`（驳回复核） | 是 | 长度 `5-256` | `E_CLUE_4010`、`E_CLUE_5012`、`E_GOV_4030` | 驳回失败时保留理由输入并提示错误原因 |
 | `assignee_user_id`、`reason`（分派） | `assignee_user_id` 是 | 目标用户 ID 合法；`reason<=256` | `E_REQ_4001`、`E_GOV_4030` | 分派失败保留当前上下文并允许重试 |
 | `request-evidence` 触发参数 | 否 | 当前版本不开放提交 | `E_GOV_4030` | 按钮默认禁用，点击仅提示“暂不开放，已记录治理策略” |
 
-联调断言：分派成功后队列中对应记录的 `assignee_user_id` 与详情面板保持一致。
+联调断言：分派成功后队列中对应记录的 `assignee_user_id` 与详情面板保持一致；`override/reject` 成功后 `review_status` 必须进入 `OVERRIDDEN/REJECTED` 且队列不再返回该线索。
+
+#### 16.3.1 override/reject 联调用例矩阵（可执行）
+
+| 用例 ID | 动作 | 前置条件 | 请求要点 | 期望响应 | 回归断言 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `CR-OVR-001` | 通过复核（成功） | 线索 `review_status=PENDING`，操作者为 `ADMIN/SUPERADMIN` | `POST /api/v1/clues/{clue_id}/override`，`{ "override": true, "override_reason": "xxxxx" }`，带 `X-Request-Id` | HTTP 200 + `code=OK`，返回 `override=true`、`override_reason`、`reviewed_at` | 队列移除该线索；详情进入 `OVERRIDDEN`；刷新后不回流到待办 |
+| `CR-OVR-002` | 通过复核（参数非法） | 同上 | `override=false` 或缺失 | HTTP 400 + `E_CLUE_4008` | 页面保留输入上下文，不关闭详情抽屉 |
+| `CR-OVR-003` | 通过复核（理由非法） | 同上 | `override_reason` 长度 `<5` 或 `>256` | HTTP 400 + `E_CLUE_4009` | 字段级报错显示在理由输入框下方 |
+| `CR-OVR-004` | 通过复核（权限不足） | 操作者非管理角色 | 同 `CR-OVR-001` | HTTP 403 + `E_GOV_4030` | 按钮恢复可点击；显示无权限提示；不改本地状态 |
+| `CR-OVR-005` | 通过复核（资源不存在） | `clue_id` 不存在或不可见 | 同 `CR-OVR-001` | HTTP 404 + `E_CLUE_4043` | 清空详情并跳转下一条待办或列表空态 |
+| `CR-OVR-006` | 通过复核（服务失败） | 服务端事件发布异常模拟 | 同 `CR-OVR-001` | HTTP 501 + `E_CLUE_5011` | 页面提示“复核提交失败，可重试”，保留输入内容 |
+| `CR-REJ-001` | 驳回复核（成功） | 线索 `review_status=PENDING`，操作者为 `ADMIN/SUPERADMIN` | `POST /api/v1/clues/{clue_id}/reject`，`{ "reject_reason": "xxxxx" }`，带 `X-Request-Id` | HTTP 200 + `code=OK`，返回 `reject_reason`、`rejected_by`、`reviewed_at` | 队列移除该线索；详情进入 `REJECTED`；时间线可见驳回动作 |
+| `CR-REJ-002` | 驳回复核（理由非法） | 同上 | `reject_reason` 长度 `<5` 或 `>256` | 按 API 约定返回 `E_CLUE_4010` | 理由字段就地报错，提交按钮恢复可用 |
+| `CR-REJ-003` | 驳回复核（权限不足） | 操作者非管理角色 | 同 `CR-REJ-001` | HTTP 403 + `E_GOV_4030` | 不改队列与详情状态，提示权限不足 |
+| `CR-REJ-004` | 驳回复核（资源不存在） | `clue_id` 不存在或不可见 | 同 `CR-REJ-001` | HTTP 404 + `E_CLUE_4043` | 详情面板退出当前线索并刷新队列 |
+| `CR-REJ-005` | 驳回复核（服务失败） | 服务端关闭复核工单失败模拟 | 同 `CR-REJ-001` | HTTP 501 + `E_CLUE_5012` | 页面展示失败提示并允许原地重试 |
+
+执行建议：
+1. 联调顺序建议先执行 `CR-OVR-001`、`CR-REJ-001` 成功流，再跑参数/权限/资源异常分支。
+2. 每条用例都要记录 `trace_id` 并在 ADM-06 审计页做可追踪性复核。
+3. 回归阶段需重复执行 `CR-OVR-001` 与 `CR-REJ-001`，验证队列出队与终态一致性不回退。
 
 ### 16.4 ADM-04 标签与物资治理页
 

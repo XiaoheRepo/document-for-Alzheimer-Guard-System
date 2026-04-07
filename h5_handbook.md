@@ -68,6 +68,13 @@
 | BR-007 作废标签不得进入紧急链路 | `PUB-06` 拦截，禁止进入 `PUB-04` |
 | BR-010 关键操作可追踪 | 统一 `X-Trace-Id`、`X-Request-Id`、前端埋点 |
 
+### 1.6 统一入口目标（扫码与 NFC）
+
+1. 路人扫码必须直接打开网站统一入口：`https://<h5-domain>/r/{resource_token}`。
+2. 后续扩展 NFC 时，NFC 标签写入同一入口 URL，感应后同样直接打开：`https://<h5-domain>/r/{resource_token}`。
+3. `resource_token` 作为载体无关标识（QR/NFC 共用），后续业务路由复用 `GET /r/{resource_token}` 动态分流。
+4. 当前版本先交付二维码直达；NFC 作为 VNext 能力预留，不改变现有 H5 页面与 API 契约。
+
 ## 2. 技术栈与第三方库策略
 
 ### 2.1 基础栈
@@ -210,13 +217,17 @@ http.interceptors.response.use(
 
 ### 4.4 路人 H5 API 核心清单
 
-#### 4.4.1 扫码入口与动态路由
+#### 4.4.1 统一入口（扫码/NFC）与动态路由
 
 | 方法 | 完整路径 | 用途 | 成功断言 | 失败断言 |
 | :--- | :--- | :--- | :--- | :--- |
 | GET | `/r/{resource_token}` | 扫码入口验签并动态路由 | `HTTP 302` + `Set-Cookie: entry_token` | `HTTP 400 E_MAT_4002` / `HTTP 404 E_CLUE_4041` / `HTTP 422 E_MAT_4223` |
 | GET | `/p/{short_code}/clues/new` | 普通匿名上报入口 | `HTTP 302` 到 `/public/clues/new?short_code=...` | `HTTP 400 E_CLUE_4005` / `HTTP 401 E_CLUE_4012` / `HTTP 404 E_CLUE_4042` |
 | GET | `/p/{short_code}/emergency/report` | 紧急匿名上报入口 | `HTTP 302` 到 `/public/emergency/report?short_code=...` | `HTTP 400 E_REQ_4001` |
+
+说明：
+1. 二维码与后续 NFC 感应都应先进入 `/r/{resource_token}`，再由网关统一分流。
+2. 不允许为 NFC 额外新增匿名页面路由，避免双链路分叉。
 
 #### 4.4.2 手动兜底与匿名上报
 
@@ -258,7 +269,19 @@ http.interceptors.response.use(
 | `LOST` | `/p/{short_code}/emergency/report` | `/public/emergency/report?short_code={short_code}` |
 | `UNBOUND/ALLOCATED/VOID` | 无效页 | `/public/invalid?reason={code}` |
 
-### 5.3 Route Meta 规范
+### 5.3 统一入口规范（二维码与 NFC）
+
+| 载体 | 当前状态 | 入口 URL 规范 | 说明 |
+| :--- | :--- | :--- | :--- |
+| QR 二维码 | 已上线 | `https://<h5-domain>/r/{resource_token}` | 路人扫码后直接打开网站 |
+| NFC 标签 | 后续扩展 | `https://<h5-domain>/r/{resource_token}` | 路人感应后直接打开同一网站 |
+
+约束：
+1. 统一入口域名必须可配置（如 `PUBLIC_ENTRY_BASE_URL`），支持多环境切换。
+2. 任何载体都不得直达 `/public/*` 页面，必须经过 `/r/{resource_token}` 验签与路由。
+3. 若终端不支持自动拉起浏览器，需展示“点击打开网站”兜底按钮。
+
+### 5.4 Route Meta 规范
 
 | 字段 | 类型 | 说明 |
 | :--- | :--- | :--- |
@@ -267,7 +290,7 @@ http.interceptors.response.use(
 | `riskControlled` | boolean | 是否受风控冷却门禁影响 |
 | `analyticsPageId` | string | 埋点页面标识（`PUB-*`） |
 
-### 5.4 路由守卫示例
+### 5.5 路由守卫示例
 
 ```ts
 router.beforeEach((to, _from, next) => {
@@ -372,7 +395,7 @@ router.beforeEach((to, _from, next) => {
 
 ### 8.2 PUB-01 扫码解析中转页
 
-1. 从扫码 URL 提取 `resource_token` 后请求 `GET /r/{resource_token}`。
+1. 从扫码 URL 或 NFC 打开 URL 提取 `resource_token` 后请求 `GET /r/{resource_token}`。
 2. 成功依赖网关 302 自动跳转，不在前端二次拼接业务路由。
 3. 失败时根据错误码跳转 `PUB-06` 或 `PUB-07`。
 
@@ -617,6 +640,7 @@ export type ClueReportResponse = {
 | H5-IT-005 | 手动录入触发限流 | 连续失败达到阈值 | `HTTP 429 + Retry-After`，进入 `PUB-07` |
 | H5-IT-006 | 上报鉴权失效 | `entry_token` 过期 | `HTTP 401 + E_CLUE_4012`，引导重建链路 |
 | H5-IT-007 | 上报成功回执 | 请求合法 | 展示 `clue_id/status/reported_at`，无隐私字段 |
+| H5-IT-008 | NFC 直达入口（VNext） | NFC 标签写入统一 URL | 感应后直接打开 `https://<h5-domain>/r/{resource_token}` 并进入同一分流链路 |
 
 ## 16. 安全与隐私规范
 
@@ -684,3 +708,13 @@ H5 --> P: 展示回执页（无隐私字段）
 | `UNBOUND` | 拦截 | 渲染 `PUB-06` | 禁止提交线索 |
 | `ALLOCATED` | 拦截 | 渲染 `PUB-06` | 禁止提交线索 |
 | `VOID` | 拦截 | 渲染 `PUB-06` | 禁止进入上报链路 |
+
+### 19.3 统一入口载体规范（QR/NFC）
+
+| 项目 | 规范 |
+| :--- | :--- |
+| 统一入口 | `https://<h5-domain>/r/{resource_token}` |
+| 当前载体 | QR 二维码（直接跳转网站） |
+| 后续载体 | NFC NDEF URL（感应后直接跳转同一网站） |
+| 路由要求 | 必须先到 `/r/{resource_token}`，再动态路由到 `/p/{short_code}/...` |
+| 禁止项 | 不得把 `/public/*` 作为二维码或 NFC 直链入口 |

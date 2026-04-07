@@ -6,7 +6,7 @@
 | 项目 | 内容 |
 | :--- | :--- |
 | 文档名称 | Android 前端开发手册 |
-| 版本 | V1.0 |
+| 版本 | V1.1 |
 | 日期 | 2026-04-07 |
 | 输入基线 | SRS_simplify.md、SADD_from_SRS_simplify.md、LLD_from_SRS_SADD.md、API_from_SRS_SADD_LLD.md、backend_handbook.md |
 | 适用对象 | Android 开发、测试、联调、架构评审 |
@@ -32,6 +32,23 @@
 4. 本地缓存、离线与重试。
 5. WebSocket/SSE 实时链路与降级。
 6. 测试、质量门禁、发布流程。
+
+### 1.3 需求追踪矩阵（SRS -> Android）
+
+| 需求/规则 | Android 责任 | 关键页面 | 关键接口 | 验收编号 |
+| :--- | :--- | :--- | :--- | :--- |
+| `FR-CLUE-008`（扫码动态路由） | 根据标签状态执行正确页面路由，不做本地猜测兜底 | `PUB-01`、`PUB-03`、`PUB-04` | `GET /r/{resource_token}` | `ACC-FE-001` |
+| `FR-CLUE-003` + `BR-001`（匿名兜底准入） | 手动录入仅提交必要字段并执行冷却倒计时 | `PUB-02` | `POST /api/v1/public/clues/manual-entry` | `ACC-FE-002` |
+| `FR-CLUE-005`（存疑线索闭环） | 线索状态展示与复核结果刷新闭环，不出现悬挂态 | `CLUE-01`、`ADM-03` | `GET /api/v1/clues/{clue_id}` | `ACC-FE-003` |
+| `FR-TASK-001`（唯一进行中任务） | 新建任务前后正确处理冲突并跳转已有任务 | `TASK-04`、`TASK-02` | `POST /api/v1/rescue/tasks` | `ACC-FE-004` |
+| `FR-TASK-003/004`（任务关闭） | `FALSE_ALARM` 强制原因校验，终态不可重复提交 | `TASK-05` | `POST /api/v1/rescue/tasks/{task_id}/close` | `ACC-FE-005` |
+| `FR-PRO-005/006` + `BR-006`（主监护转移） | 仅允许目标受方确认；成员移除后隐藏失效转移动作 | `GUA-01` | 监护转移相关接口 | `ACC-FE-006` |
+| `FR-PRO-008`（围栏配置） | 围栏参数本地校验并对 `E_PRO_4221` 精准提示 | `PAT-03` | `PUT /api/v1/patients/{patient_id}/fence` | `ACC-FE-007` |
+| `FR-TASK-005` + `HC-06`（通知触达） | 仅实现“应用推送 + 站内通知”双通道，不依赖短信 | `NOTI-01`、`TASK-02` | `GET /api/v1/notifications` | `ACC-FE-008` |
+| `HC-03/HC-04`（幂等与追踪） | 写接口注入 `X-Request-Id`，全链路注入 `X-Trace-Id` | 全写接口页面 | 所有写接口 | `ACC-FE-009` |
+| `HC-05`（WS 路由化下发） | 客户端执行去重、防乱序与补洞，不做全量广播假设 | `TASK-03`、`NOTI-01` | `POST /api/v1/ws/tickets`、轮询补洞接口 | `ACC-FE-010` |
+
+说明：验收编号在第 17.4 节给出可执行测试口径。
 
 ## 2. 技术栈与版本基线
 
@@ -220,6 +237,16 @@ class TraceAndIdempotencyInterceptor(
 2. 若缺失 `Retry-After`，采用指数退避 + 抖动。
 3. 退避公式：`delay = min(base * 2^attempt + jitter, maxDelay)`。
 
+### 6.5 契约一致性校验清单（联调前必过）
+
+1. 所有 ID 字段按字符串处理与传输，禁止在网络层转数值再回传。
+2. 写接口必须注入 `X-Request-Id`，长度与字符集满足契约约束。
+3. 全请求注入 `X-Trace-Id`，并在错误日志中关联输出。
+4. 遇到 `E_REQ_4003`（保留头伪造）时，客户端不得重试并提示版本或代理异常。
+5. 429 场景必须优先读 `Retry-After`，无该头才走本地指数退避。
+6. 401（`E_GOV_4011`）统一触发会话失效清理，不允许页面各自处理。
+7. 匿名链路仅使用 `X-Anonymous-Token`，不得在 Body 透传敏感匿名凭据。
+
 ## 7. 鉴权与会话管理
 
 覆盖接口：
@@ -256,6 +283,18 @@ class TraceAndIdempotencyInterceptor(
 1. `E_GOV_4291` 或 `E_GOV_4292` 时读取 `Retry-After`，禁用提交按钮到期后恢复。
 2. 人工录入连续失败时要给出冷却提示与倒计时。
 
+### 8.4 扫码动态路由矩阵（FR-CLUE-008）
+
+| 标签状态 | 路由结果 | 客户端动作 | 禁止行为 |
+| :--- | :--- | :--- | :--- |
+| `BOUND` | 普通匿名上报 | 跳转 `PUB-03`，展示普通上报文案 | 禁止进入紧急上报 |
+| `LOST` | 紧急上报 | 跳转 `PUB-04`，默认聚焦紧急提交 | 禁止降级为普通上报 |
+| `UNBOUND` | 拦截提示 | 展示“标签未绑定，暂不可上报” | 禁止展示患者信息 |
+| `ALLOCATED` | 拦截提示 | 展示“标签待绑定，请联系监护人” | 禁止放行到上报页 |
+| `VOID` | 拦截提示 | 展示“标签已作废”并引导重新确认标签 | 禁止进入任何上报链路 |
+
+实现约束：路由结果以后端返回为准；客户端不得根据本地缓存推断标签状态。
+
 ## 9. 地图与坐标系统一规范
 
 1. Android 高德定位原始坐标是 `GCJ-02`，上报必须声明 `coord_system=GCJ-02`。
@@ -287,12 +326,40 @@ class TraceAndIdempotencyInterceptor(
 规则：
 1. 列表优先使用 Cursor 翻页。
 2. 本地读状态更新采用“先本地后回滚”策略，接口失败时回滚并提示。
+3. 触达通道仅支持“应用推送 + 站内通知”，不实现短信分支。
 
 ### 10.4 AI 模块（feature-ai）
 
 1. AI 请求超时必须可配置。
 2. `E_AI_4292`、`E_AI_4293` 必须识别并展示“稍后重试/已降级”提示。
 3. 若返回 `fallback_response.mode`，在 UI 上明确标注为降级结果。
+
+### 10.5 关键状态机守卫矩阵（客户端可操作性）
+
+#### 10.5.1 任务关闭状态机
+
+| 当前状态 | 操作 | 目标状态 | 是否允许 | 客户端守卫 |
+| :--- | :--- | :--- | :---: | :--- |
+| `ACTIVE` | 关闭为寻回 | `RESOLVED` | 是 | 允许提交，成功后刷新详情与时间线 |
+| `ACTIVE` | 关闭为误报 | `FALSE_ALARM` | 是 | `reason` 长度 5-256，校验通过才可提交 |
+| `RESOLVED` | 任意关闭 | - | 否 | 按钮置灰并提示“任务已终态” |
+| `FALSE_ALARM` | 任意关闭 | - | 否 | 按钮置灰并提示“任务已终态” |
+
+#### 10.5.2 主监护转移状态机（前端展示约束）
+
+| 转移状态 | 可见动作（发起方） | 可见动作（目标受方） | 客户端约束 |
+| :--- | :--- | :--- | :--- |
+| `PENDING_CONFIRM` | 撤销 | 确认 / 拒绝 | 仅目标受方展示确认与拒绝按钮 |
+| `CONFIRMED` | 无 | 无 | 展示完成态，不可重复操作 |
+| `REJECTED` | 可重新发起 | 无 | 必须展示拒绝原因 |
+| `CANCELLED` | 可重新发起 | 无 | 展示撤销人和撤销时间 |
+
+#### 10.5.3 通知已读状态机
+
+| 当前状态 | 用户动作 | 乐观更新 | 失败处理 |
+| :--- | :--- | :---: | :--- |
+| `UNREAD` | 标记已读 | 是 | 回滚为 `UNREAD` 并提示重试 |
+| `READ` | 标记已读 | 否 | 保持 `READ`，不重复调用接口 |
 
 ## 11. 实时消息规范（WebSocket / SSE / 轮询）
 
@@ -318,6 +385,33 @@ class TraceAndIdempotencyInterceptor(
 
 1. WebSocket 不可用时，降级调用 `GET /api/v1/rescue/tasks/{task_id}/events/poll`。
 2. 首屏消息中心始终支持 HTTP 拉取兜底。
+
+### 11.5 事件一致性消费规范（对齐 Outbox 语义）
+
+1. 事件应用顺序：先校验 `trace_id` 与 `event_id`，再做去重与版本比较。
+2. 去重键建议：`event_id`；若服务端未给出，退化为 `type + aggregate_id + version`。
+3. 版本守卫：仅当 `incoming.version > local.version` 才应用事件。
+4. 空洞检测：若 `incoming.version > local.version + 1`，先触发快照拉取或增量补洞。
+5. 恢复策略：App 从后台回前台时，必须先拉一次增量，后恢复实时流。
+6. 事件应用失败时，禁止直接覆盖本地权威快照；应记录失败并触发兜底拉取。
+
+建议实现伪代码：
+
+```kotlin
+fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
+    if (dedupStore.contains(event.eventId)) return ConsumeAction.Ignore
+    if (event.version <= localVersion) return ConsumeAction.Ignore
+    if (event.version > localVersion + 1) return ConsumeAction.FetchSnapshot
+    return ConsumeAction.Apply
+}
+```
+
+### 11.6 通知触达策略（无短信能力）
+
+1. 紧急与高优事件必须双通道触达：应用推送 + 站内通知。
+2. 推送不可达时，消息中心首屏必须可见未读站内消息。
+3. 客户端不得显示“短信通知已发送”等误导文案。
+4. 所有触达失败提示应给出可操作入口（查看消息中心或刷新）。
 
 ## 12. 本地存储、缓存与同步
 
@@ -658,6 +752,25 @@ class CoilAppImage : AppImage {
 3. 任何 AI 输出都不是“系统真相”，高风险建议必须附免责声明。
 4. 发生降级时，在会话中保留“降级原因 + 可重试入口”。
 
+### 16.1 AI 可实现指标（移动端）
+
+| 指标 | 目标值 | 采集口径 |
+| :--- | :--- | :--- |
+| 首 token 时延（P95） | <= 4s | 用户点击发送到首片段渲染 |
+| 完整响应时延（P95） | <= 12s | 用户点击发送到最终完成 |
+| 会话成功率 | >= 99% | `code=OK` 且可渲染完成 |
+| 降级可用率 | >= 99.5% | 主路径失败后仍返回可解释结果 |
+| 429 恢复成功率 | >= 95% | 按 `Retry-After` 重试后成功 |
+
+### 16.2 降级模式前端映射
+
+| `fallback_response.mode` | 前端文案 | 交互动作 |
+| :--- | :--- | :--- |
+| `RULE_BASED` | 已切换规则引擎结果 | 显示“重试”按钮 |
+| `SAFE_GUARD` | 当前仅返回安全建议 | 显示免责声明，不给高风险快捷操作 |
+| `TOOL_DEGRADED` | 工具能力受限，结果可能不完整 | 提示稍后重试并保留上下文 |
+| 未知值 | 已切换降级结果 | 统一降级文案 + 上报埋点 |
+
 ## 17. 测试与质量门禁
 
 ### 17.1 测试分层
@@ -680,6 +793,21 @@ class CoilAppImage : AppImage {
 3. 429 + `Retry-After` 退避回归。
 4. 匿名凭据失效链路回归。
 5. 通知乱序事件去重与防覆盖回归。
+
+### 17.4 需求验收用例矩阵（P0）
+
+| 验收编号 | 用例说明 | 前置条件 | 预期结果 |
+| :--- | :--- | :--- | :--- |
+| `ACC-FE-001` | 扫码路由到普通或紧急页 | 准备 `BOUND` 与 `LOST` 标签二维码 | `BOUND->PUB-03`、`LOST->PUB-04` |
+| `ACC-FE-002` | 手动录入限流冷却 | 连续触发匿名录入直到 429 | 按 `Retry-After` 倒计时解禁提交 |
+| `ACC-FE-003` | 存疑线索闭环可见性 | 存在一条 `SUSPECTED` 线索并完成复核 | 页面状态从存疑进入终态且可追溯 |
+| `ACC-FE-004` | 重复创建任务冲突处理 | 患者已有 `ACTIVE` 任务 | 返回冲突后跳转或引导到已存在任务 |
+| `ACC-FE-005` | 误报关闭原因必填 | 任务为 `ACTIVE` | 空原因不可提交；合法原因可关闭为 `FALSE_ALARM` |
+| `ACC-FE-006` | 主监护转移按钮权限 | 存在 `PENDING_CONFIRM` 转移请求 | 仅目标受方可见确认/拒绝按钮 |
+| `ACC-FE-007` | 围栏参数非法提示 | 围栏开启但缺失中心点或半径 | 精准提示 `E_PRO_4221` 文案 |
+| `ACC-FE-008` | 通知双通道兜底 | 模拟推送不可达 | 站内消息中心仍能看到未读通知 |
+| `ACC-FE-009` | 头部注入一致性 | 执行任意写接口 | 请求携带 `X-Request-Id` + `X-Trace-Id` |
+| `ACC-FE-010` | WS 乱序与补洞 | 注入乱序/跨版本事件 | 旧版本事件被忽略，空洞触发补洞拉取 |
 
 ## 18. 可观测性与线上诊断
 

@@ -443,7 +443,7 @@ export const useAdminPrefStore = defineStore('admin-pref', {
 | :--- | :--- | :--- |
 | ADM-01 | `/admin/dashboard` | `/api/v1/admin/dashboard/metrics`、`/api/v1/admin/clues/statistics`、`/api/v1/admin/metrics/security` |
 | ADM-02 | `/admin/tasks` | `/api/v1/admin/rescue/tasks`、`/api/v1/admin/rescue/tasks/{task_id}`、`/api/v1/admin/rescue/tasks/{task_id}/notify/retry` |
-| ADM-03 | `/admin/clues/review` | `/api/v1/admin/clues/review/queue`、`/api/v1/admin/clues/{clue_id}`、`/api/v1/clues/{clue_id}/override`、`/api/v1/clues/{clue_id}/reject`、`/api/v1/admin/clues/{clue_id}/assign` |
+| ADM-03 | `/admin/clues/review` | `/api/v1/admin/clues/review/queue`、`/api/v1/admin/clues/{clue_id}`、`/api/v1/clues/{clue_id}/override`、`/api/v1/clues/{clue_id}/reject`、`/api/v1/admin/clues/{clue_id}/assign`、`/api/v1/admin/clues/{clue_id}/request-evidence`（禁用入口，当前版本不开放） |
 | ADM-04 | `/admin/material` | `/api/v1/admin/material/orders*`、`/api/v1/admin/tags*` 及治理动作接口 |
 | ADM-05 | `/admin/users` | `/api/v1/admin/users`、`/api/v1/admin/users/{user_id}/status`、`/api/v1/admin/users/{user_id}/password:reset` |
 | ADM-06 | `/admin/audit` | `/api/v1/admin/logs`、`/api/v1/admin/metrics/security` |
@@ -720,7 +720,7 @@ FE --> Admin: 展示成功并刷新审计流
 | `CR-OVR-005` | 通过复核（资源不存在） | `clue_id` 不存在或不可见 | 同 `CR-OVR-001` | HTTP 404 + `E_CLUE_4043` | 清空详情并跳转下一条待办或列表空态 |
 | `CR-OVR-006` | 通过复核（服务失败） | 服务端事件发布异常模拟 | 同 `CR-OVR-001` | HTTP 501 + `E_CLUE_5011` | 页面提示“复核提交失败，可重试”，保留输入内容 |
 | `CR-REJ-001` | 驳回复核（成功） | 线索 `review_status=PENDING`，操作者为 `ADMIN/SUPERADMIN` | `POST /api/v1/clues/{clue_id}/reject`，`{ "reject_reason": "xxxxx" }`，带 `X-Request-Id` | HTTP 200 + `code=OK`，返回 `reject_reason`、`rejected_by`、`reviewed_at` | 队列移除该线索；详情进入 `REJECTED`；时间线可见驳回动作 |
-| `CR-REJ-002` | 驳回复核（理由非法） | 同上 | `reject_reason` 长度 `<5` 或 `>256` | 按 API 约定返回 `E_CLUE_4010` | 理由字段就地报错，提交按钮恢复可用 |
+| `CR-REJ-002` | 驳回复核（理由非法） | 同上 | `reject_reason` 长度 `<5` 或 `>256` | HTTP 401 + `E_CLUE_4010` | 理由字段就地报错，提交按钮恢复可用 |
 | `CR-REJ-003` | 驳回复核（权限不足） | 操作者非管理角色 | 同 `CR-REJ-001` | HTTP 403 + `E_GOV_4030` | 不改队列与详情状态，提示权限不足 |
 | `CR-REJ-004` | 驳回复核（资源不存在） | `clue_id` 不存在或不可见 | 同 `CR-REJ-001` | HTTP 404 + `E_CLUE_4043` | 详情面板退出当前线索并刷新队列 |
 | `CR-REJ-005` | 驳回复核（服务失败） | 服务端关闭复核工单失败模拟 | 同 `CR-REJ-001` | HTTP 501 + `E_CLUE_5012` | 页面展示失败提示并允许原地重试 |

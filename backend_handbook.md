@@ -366,6 +366,7 @@ public interface RescueTaskMapper {
 
 1. 发货需 tracking_number，可选 courier_name。
 2. 终态写 closed_at。
+3. 取消审核通过（CANCEL_PENDING -> CANCELLED）时，approved_at 与 closed_at 必须同事务写入。
 
 ### 6.5 TagAsset
 
@@ -429,6 +430,7 @@ Outbox phase：PENDING/DISPATCHING/SENT/RETRY/DEAD。
 1. DELETE /api/v1/patients/{patient_id}/guardians/{user_id} 时，若目标成员存在 PENDING_CONFIRM 请求，必须同事务取消该请求。
 2. 被移除成员发起的历史确认请求必须失效，统一返回状态冲突（E_PRO_4099）或受方身份失效（E_PRO_4011/E_PRO_4013）。
 3. transfer_request_id 必须全局唯一，且转移发起/确认/拒绝/撤销字段必须完整落审计。
+4. transfer_state=CANCELLED 时，transfer_cancelled_by/transfer_cancelled_at/transfer_cancel_reason 必须成组非空；非 CANCELLED 时三者必须为空。
 
 ### 6.10 存疑线索复核闭环状态机（必须）
 
@@ -444,6 +446,8 @@ Outbox phase：PENDING/DISPATCHING/SENT/RETRY/DEAD。
 1. review_status=OVERRIDDEN 时，override=true 且 override_reason 必填。
 2. review_status=REJECTED 时，rejected_by 与 reject_reason 必须成对非空。
 3. review_status in (OVERRIDDEN, REJECTED) 时，reviewed_at 必须非空。
+4. review_status!=OVERRIDDEN 时，override=false 且 override_reason 为空。
+5. review_status!=REJECTED 时，rejected_by 与 reject_reason 必须同时为空。
 
 ### 6.11 围栏配置与抑制语义（必须）
 
@@ -538,6 +542,11 @@ void assertOwnership(Long operatorId, Long patientId, Role role) {
 4. 校验生成结果长度不超过 1024（与存储字段约束一致）。
 5. 与发货分配事务同提交：`tag_asset UNBOUND -> ALLOCATED` 与 `resource_link` 写入必须同事务。
 
+运行时字段边界（必须）：
+1. `resource_token_expire_at` 由令牌服务按 TTL 运行时计算并在查询接口返回。
+2. 资源链接口返回的 `status` 属于令牌运行时状态，不作为 `tag_apply_record` 固定持久化列。
+3. 持久化层仅保存 `resource_link` 字符串，令牌状态与过期时间以令牌服务为权威。
+
 幂等与轮换规则：
 1. 同一 `order_id + tag_code` 重复触发分配时，未发生风险轮换则返回同一 `resource_link`。
 2. 标签作废重发、密钥轮换、泄露应急时，必须生成新 `resource_token` 并重建 `resource_link`。
@@ -591,8 +600,16 @@ PUT /api/v1/patients/{patient_id}/fence：
 | source_type | clue.sourceType | clue_record.source_type |
 | suspect_reason | clue.suspectReason | clue_record.suspect_reason |
 | review_status | clue.reviewStatus | clue_record.review_status |
+| override | clue.override | clue_record.override |
+| override_reason | clue.overrideReason | clue_record.override_reason |
+| rejected_by | clue.rejectedBy | clue_record.rejected_by |
+| reviewed_at | clue.reviewedAt | clue_record.reviewed_at |
 | alert_id/level/type/title/created_at | task.alerts[] | notification_inbox(type in TASK_PROGRESS/FENCE_ALERT/TASK_CLOSED) |
 | courier_name | order.courierName | tag_apply_record.courier_name |
+| approved_at(cancel_approve) | order.approvedAt | tag_apply_record.approved_at + tag_apply_record.closed_at |
+| resource_link | order.resourceLink | tag_apply_record.resource_link |
+| resource_token_expire_at | order.resourceTokenExpireAt | 运行时字段（令牌服务，不落固定列） |
+| status(resource_link) | order.resourceLinkStatus | 运行时字段（令牌服务，不落固定列） |
 | note_id/kind/content/tags | memory.note | patient_memory_note.* |
 | archived_at | aiSession.archivedAt | ai_session.archived_at |
 | status(archive) | aiSession.status | ai_session.status |
@@ -603,7 +620,9 @@ PUT /api/v1/patients/{patient_id}/fence：
 | transfer_request_id | guardian.transferRequestId | sys_user_patient.transfer_request_id |
 | transfer_state | guardian.transferState | sys_user_patient.transfer_state |
 | cancel_reason | guardian.transferCancelReason | sys_user_patient.transfer_cancel_reason |
+| cancelled_at | guardian.transferCancelledAt | sys_user_patient.transfer_cancelled_at |
 | reject_reason(confirm) | guardian.transferRejectReason | sys_user_patient.transfer_reject_reason |
+| removed_at | guardian.removedAt | sys_user_patient.updated_at（回传别名） |
 | fence_enabled/fence_center/fence_radius_m | profile.fence | patient_profile.fence_enabled/fence_center/fence_radius_m |
 | replay.created_at | outboxReplay.createdAt | sys_outbox_log.created_at |
 | medical_history.* | profile.medicalHistory | patient_profile.medical_history |

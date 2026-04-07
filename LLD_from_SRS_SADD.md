@@ -466,8 +466,21 @@ WHERE session_id = :session_id
 1. 仅原发起方或 SUPERADMIN。
 2. 仅 PENDING_CONFIRM 且未过期可撤销。
 3. 同事务写 transfer_cancelled_by、transfer_cancelled_at、transfer_cancel_reason。
+4. 响应字段 cancelled_at 回传自 sys_user_patient.transfer_cancelled_at。
 
 错误码：E_PRO_4041、E_PRO_4045、E_PRO_4098、E_PRO_4012、E_REQ_4001。
+
+#### 3.5.6 DELETE /api/v1/patients/{patient_id}/guardians/{user_id}
+
+用途：移除家庭成员。
+
+处理要点：
+1. 仅 PRIMARY_GUARDIAN 或 SUPERADMIN 可执行。
+2. 若目标成员存在 PENDING_CONFIRM 的主监护转移请求，必须同事务取消。
+3. 将 sys_user_patient.relation_status 更新为 REVOKED。
+4. 响应字段 removed_at 由该行 updated_at 回传。
+
+错误码：E_PRO_4032、E_PRO_4041、E_PRO_4044、E_PRO_4099、E_REQ_4001。
 
 ### 3.6 物资与标签接口
 
@@ -517,6 +530,26 @@ WHERE session_id = :session_id
 绑定成功后：
 - 发布 tag.bound。
 - 若工单状态为 SHIPPED，触发 order.auto_confirm.on_bind 进入 COMPLETED。
+
+#### 3.6.3 PUT /api/v1/admin/material/orders/{order_id}/cancel/approve
+
+用途：管理员审核通过取消申请。
+
+处理要点：
+1. 仅允许 CANCEL_PENDING -> CANCELLED。
+2. 同事务写 status=CANCELLED、approved_at、closed_at。
+
+错误码：E_GOV_4030、E_MAT_4041、E_MAT_4094、E_REQ_4001。
+
+#### 3.6.4 GET /api/v1/material/orders/{order_id}/resource-link
+
+用途：读取工单资源链状态。
+
+处理要点：
+1. resource_link 落库字段为 tag_apply_record.resource_link。
+2. resource_token_expire_at 与 status 由令牌服务运行时计算回传，不作为持久化状态列。
+
+错误码：E_GOV_4011、E_MAT_4030、E_MAT_4041、E_REQ_4005。
 
 ### 3.7 查询接口（Query）与分页契约
 
@@ -770,8 +803,10 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 - check(transfer_state in ('NONE','PENDING_CONFIRM','ACCEPTED','REJECTED','CANCELLED','EXPIRED'))
 - transfer_state='ACCEPTED' 时，transfer_confirmed_at 必须非空；其他状态必须为空。
 - transfer_state='REJECTED' 时，transfer_rejected_at 与 transfer_reject_reason 必须成对非空；其他状态必须为空。
+- transfer_state='CANCELLED' 时，transfer_cancelled_by/transfer_cancelled_at/transfer_cancel_reason 必须成组非空；其他状态必须为空。
 - uq_transfer_pending(patient_id) where transfer_state='PENDING_CONFIRM'
 - 主监护转移链路必须完整记录发起/撤销/拒绝三类审计字段，满足 AC-027 合规追踪。
+- 删除成员接口中的 removed_at 为回传语义，映射自 sys_user_patient.updated_at。
 
 ### 5.3A guardian_invitation
 
@@ -861,6 +896,8 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 - review_status in (OVERRIDDEN, REJECTED) 时 reviewed_at 必须非空；review_status in (NULL, PENDING) 时 reviewed_at 必须为空。
 - 当 review_status=OVERRIDDEN 时，override 必须为 true。
 - 当 review_status=REJECTED 时，rejected_by 与 reject_reason 必须成对非空。
+- 当 review_status!=OVERRIDDEN 时，override 必须为 false 且 override_reason 必须为空。
+- 当 review_status!=REJECTED 时，rejected_by 与 reject_reason 必须同时为空。
 
 索引：
 - gist_clue_location(location)
@@ -957,6 +994,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 - `approved_at` 非空时，`status` 仅允许 `PROCESSING/CANCEL_PENDING/CANCELLED/SHIPPED/EXCEPTION/COMPLETED`。
 - `rejected_at` 与 `reject_reason` 必须成对出现。
 - `status in ('CANCELLED','COMPLETED')` 时，`closed_at` 必须非空；其他状态必须为空。
+- 取消审核通过链路（CANCEL_PENDING -> CANCELLED）必须同事务写 `approved_at` 与 `closed_at`。
 
 ### 5.8A 物流轨迹能力（毕设精简）
 
@@ -966,6 +1004,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 
 1. 仅保留 `tag_apply_record.tracking_number/courier_name/status` 作为物流可见字段。
 2. API 3.4.24 在毕设版本暂不开放。
+3. 资源链接口中的 `resource_token_expire_at/status` 为令牌运行时字段，不落固定持久化列。
 
 ### 5.8B 任务告警落库（毕设精简）
 

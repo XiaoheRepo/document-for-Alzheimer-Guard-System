@@ -219,11 +219,13 @@ http.interceptors.response.use(
 
 #### 4.4.1 统一入口（扫码/NFC）与动态路由
 
+> 注意：以下 `/r/{resource_token}` 与 `/p/{short_code}/*` 均为**网关级重定向路由**（302 跳转），不是 REST 业务接口。实际线索提交走 §4.4.2 中的 `POST /api/v1/clues/report`。
+
 | 方法 | 完整路径 | 用途 | 成功断言 | 失败断言 |
 | :--- | :--- | :--- | :--- | :--- |
 | GET | `/r/{resource_token}` | 扫码入口验签并动态路由 | `HTTP 302` + `Set-Cookie: entry_token` | `HTTP 400 E_MAT_4002` / `HTTP 404 E_CLUE_4041` / `HTTP 422 E_MAT_4223` |
-| GET | `/p/{short_code}/clues/new` | 普通匿名上报入口 | `HTTP 302` 到 `/public/clues/new?short_code=...` | `HTTP 400 E_CLUE_4005` / `HTTP 401 E_CLUE_4012` / `HTTP 404 E_CLUE_4042` |
-| GET | `/p/{short_code}/emergency/report` | 紧急匿名上报入口 | `HTTP 302` 到 `/public/emergency/report?short_code=...` | `HTTP 400 E_REQ_4001` |
+| GET | `/p/{short_code}/clues/new` | 网关重定向：普通匿名上报 | `HTTP 302` 到 `/public/clues/new?short_code=...` | `HTTP 400 E_CLUE_4005` / `HTTP 401 E_CLUE_4012` / `HTTP 404 E_CLUE_4042` |
+| GET | `/p/{short_code}/emergency/report` | 网关重定向：紧急匿名上报 | `HTTP 302` 到 `/public/emergency/report?short_code=...` | `HTTP 400 E_REQ_4001` |
 
 说明：
 1. 二维码与后续 NFC 感应都应先进入 `/r/{resource_token}`，再由网关统一分流。
@@ -409,6 +411,7 @@ router.beforeEach((to, _from, next) => {
 
 1. 必填：`tag_code`、`coord_system`、`location.lat`、`location.lng`。
 2. 可选：`description`、`photo_url`。
+3. 浏览器 `navigator.geolocation` API 返回的坐标为 `WGS84`；若调用高德 JS API 获取定位则为 `GCJ-02`。前端必须根据实际定位源正确声明 `coord_system`，网关负责转换为 WGS84 后入库。
 3. 提交成功跳转 `PUB-05`，并清空草稿缓存。
 4. `E_CLUE_4012` 时提示匿名凭据失效并返回入口页。
 

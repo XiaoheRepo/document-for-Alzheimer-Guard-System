@@ -414,6 +414,13 @@ Outbox phase：PENDING/DISPATCHING/SENT/RETRY/DEAD。
 
 ### 6.9 监护邀请与主监护转移状态机（必须）
 
+监护邀请→关系激活事务规则：
+
+1. 邀请 ACCEPTED 后，必须在**同一事务**内创建或激活 `sys_user_patient` 行（`relation_role=GUARDIAN, relation_status=ACTIVE`）。
+2. 若 `sys_user_patient` 已存在且 `relation_status=REVOKED`，同事务更新为 `ACTIVE` 并重置 `transfer_state=NONE`。
+3. 若已存在 `relation_status=ACTIVE` 行，幂等返回成功。
+4. 邀请 REJECTED 时不得创建或修改 `sys_user_patient`。
+
 主监护转移状态机：
 
 | 当前 transfer_state | 触发动作 | 下一状态 | 守卫 |
@@ -455,6 +462,12 @@ Outbox phase：PENDING/DISPATCHING/SENT/RETRY/DEAD。
 2. fence_enabled=false 时，fence_center 与 fence_radius_m 必须同时置空。
 3. lost_status=NORMAL 时允许 fence.breached 触发告警；lost_status=MISSING 时必须抑制围栏告警风暴，但保留 track.updated 进展更新。
 4. 围栏判定必须基于 task.state.changed 的 L1/L2 投影缓存，不得高频同步 RPC 拉取 task-service。
+
+lost_status 状态驱动规则（参见 LLD §6.1.1）：
+
+5. `lost_status` 完全由事件驱动，不提供独立写入 API：task.created → MISSING，task.resolved/task.false_alarm → NORMAL。
+6. profile-service 消费 task 域事件执行条件更新，必须使用 `lost_status_event_time` 防乱序覆盖（event_time <= lost_status_event_time 时丢弃）。
+7. 网关坐标转换在进入业务层之前完成（详见 §7.2），业务服务收到的坐标恒为 WGS84。
 
 ---
 
@@ -582,7 +595,7 @@ PUT /api/v1/patients/{patient_id}/fence：
 
 1. fence_enabled=true 时，fence_center(lat/lng) 与 fence_radius_m 必填。
 2. fence_enabled=false 时，fence_center 与 fence_radius_m 必须置空。
-3. 坐标入库前统一标准化为 WGS84，非法坐标或转换失败直接拒绝。
+3. 坐标标准化为 WGS84 的转换职责归属**网关层**（gateway-security），业务服务收到的坐标恒为 WGS84，不得在业务层二次转换。非法坐标或转换失败由网关返回 `E_CLUE_4007` 拒绝。
 
 ---
 

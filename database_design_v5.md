@@ -146,6 +146,18 @@ medical_history JSONB 键契约：
 - check(lost_status in ('NORMAL','MISSING'))
 - check((fence_enabled=false and fence_center is null and fence_radius_m is null) or (fence_enabled=true and fence_center is not null and fence_radius_m between 50 and 5000))
 
+lost_status 事件驱动转换规则（参见 LLD §6.1.1）：
+
+| 当前状态 | 触发事件 | 下一状态 | 守卫 |
+| :--- | :--- | :--- | :--- |
+| NORMAL | task.created | MISSING | 事件版本更新且无主键冲突 |
+| MISSING | task.resolved | NORMAL | 匹配同患者有效任务 |
+| MISSING | task.false_alarm | NORMAL | 匹配同患者有效任务 |
+| 任意 | 旧版本事件 | 原状态 | event_time <= lost_status_event_time 时丢弃 |
+
+- profile-service 消费 task 域事件执行条件更新，必须使用 `lost_status_event_time` 防乱序覆盖。
+- 应用层不提供独立写入 `lost_status` 的 API，该字段完全由事件驱动。
+
 索引：
 
 - ux_patient_profile_no(profile_no)
@@ -290,7 +302,7 @@ medical_history JSONB 键契约：
 | source_type | varchar(20) | not null | SCAN/MANUAL |
 | risk_score | numeric(5,4) | null | 风险分（0-1） |
 | location | geometry(Point,4326) | not null | 坐标（WGS84） |
-| coord_system | varchar(10) | not null default 'WGS84' | 标准化坐标系（固定 WGS84） |
+| coord_system | varchar(10) | not null default 'WGS84' | 标准化坐标系（恒为 WGS84；保留此列用于 DDL 自文档化与 CHECK 防御性约束，网关已在入库前完成 GCJ-02/BD-09 → WGS84 转换） |
 | description | text | null | 现场描述 |
 | photo_url | varchar(1024) | null | 照片地址 |
 | is_valid | boolean | not null | 有效标记 |
@@ -436,6 +448,16 @@ medical_history JSONB 键契约：
 - check((rejected_at is null and reject_reason is null) or (rejected_at is not null and reject_reason is not null))
 - check((status in ('CANCELLED','COMPLETED') and closed_at is not null) or (status in ('PENDING','PROCESSING','CANCEL_PENDING','SHIPPED','EXCEPTION') and closed_at is null))
 
+状态机流转（参见 LLD §6.2）：
+
+- PENDING → PROCESSING（审核通过）。
+- PROCESSING → CANCEL_PENDING（取消申请）| SHIPPED（发货）。
+- CANCEL_PENDING → CANCELLED（取消审核通过）| PROCESSING（取消驳回）。
+- SHIPPED → EXCEPTION（物流异常）| COMPLETED（家属签收 auto_confirm）。
+- EXCEPTION → PROCESSING（补发）| CANCELLED（异常关闭）。
+- 终态：CANCELLED、COMPLETED（closed_at 必须非空）。
+- EXCEPTION 为**非终态**，可回流至 PROCESSING（补发）或转入 CANCELLED（异常关闭）。
+
 补充说明：
 1. `resource_token_expire_at` 与资源链 `status` 为令牌运行时属性，不作为 `tag_apply_record` 固定列。
 2. 资源链状态由发码服务按令牌有效期实时计算并回传。
@@ -458,8 +480,8 @@ medical_history JSONB 键契约：
 | messages | jsonb | not null | 会话消息数组 |
 | request_tokens | int | not null default 0 | 请求 token |
 | response_tokens | int | not null default 0 | 响应 token |
-| token_usage | jsonb | not null default '{}'::jsonb | 细粒度账单键值 |
-| token_used | int | not null default 0 | 总消耗 token |
+| token_usage | jsonb | not null default '{}'::jsonb | 细粒度账单键值（权威来源，多供应商统一） |
+| token_used | int | not null default 0 | 派生聚合字段，持久化值 = request_tokens + response_tokens；写入时由服务端计算，禁止客户端直传 |
 | model_name | varchar(64) | not null | 模型标识 |
 | status | varchar(20) | not null default 'ACTIVE' | ACTIVE/ARCHIVED |
 | archived_at | timestamptz | null | 归档时间 |

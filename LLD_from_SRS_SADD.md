@@ -414,6 +414,15 @@ WHERE session_id = :session_id
 | action | string | 是 | ACCEPT / REJECT |
 | reject_reason | string | 条件必填 | action=REJECT 时必填，长度 5-256 |
 
+事务语义（guardian_invitation → sys_user_patient 衔接）：
+1. action=ACCEPT 时，必须在同一事务内完成：
+   a. guardian_invitation.status → ACCEPTED，写入 accepted_at。
+   b. 创建或激活 sys_user_patient 行：user_id=invitee_user_id，patient_id=patient_id，relation_role=GUARDIAN，relation_status=ACTIVE。
+   c. 若目标 sys_user_patient 行已存在且 relation_status=REVOKED，更新为 ACTIVE 并重置 transfer_state=NONE。
+   d. 若目标行已存在且 relation_status=ACTIVE，幂等返回成功（不重复创建）。
+   e. 同事务写 Outbox 事件：guardian.invitation.accepted。
+2. action=REJECT 时，guardian_invitation.status → REJECTED，写入 rejected_at 与 reject_reason；不创建或修改 sys_user_patient。
+
 错误码：E_PRO_4041、E_PRO_4043、E_PRO_4096、E_PRO_4008、E_REQ_4001。
 
 #### 3.5.3 POST /api/v1/patients/{patient_id}/guardians/primary-transfer

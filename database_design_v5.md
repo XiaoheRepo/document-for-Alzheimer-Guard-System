@@ -378,6 +378,9 @@ medical_history JSONB 键契约：
 约束：
 
 - check(status in ('UNBOUND','ALLOCATED','BOUND','LOST','VOID'))
+- check((status not in ('BOUND','LOST')) or patient_id is not null)
+- check((status <> 'LOST') or lost_at is not null)
+- check((status <> 'VOID') or (void_at is not null and void_reason is not null))
 
 索引：
 
@@ -414,6 +417,9 @@ medical_history JSONB 键契约：
 约束：
 
 - check(status in ('PENDING','PROCESSING','CANCEL_PENDING','CANCELLED','SHIPPED','EXCEPTION','COMPLETED'))
+- check((approved_at is null) or status in ('PROCESSING','CANCEL_PENDING','CANCELLED','SHIPPED','EXCEPTION','COMPLETED'))
+- check((rejected_at is null and reject_reason is null) or (rejected_at is not null and reject_reason is not null))
+- check((closed_at is null) or status in ('CANCELLED','COMPLETED'))
 
 索引：
 

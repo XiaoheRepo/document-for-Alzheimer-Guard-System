@@ -912,6 +912,11 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 说明：
 - short_code、pin_code_hash、pin_code_salt 归属 patient_profile，不在 tag_asset 冗余存储。
 
+关键约束：
+- `status in ('UNBOUND','ALLOCATED','BOUND','LOST','VOID')`。
+- `status in ('BOUND','LOST')` 时，`patient_id` 必须非空。
+- `status='LOST'` 时，`lost_at` 必须非空；`status='VOID'` 时，`void_at` 与 `void_reason` 必须非空。
+
 ### 5.8 tag_apply_record
 
 | 字段 | 类型 | 约束 | 说明 |
@@ -936,6 +941,12 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 | closed_at | timestamptz | null | 工单关闭时间（终态写入） |
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
+
+关键约束：
+- `status in ('PENDING','PROCESSING','CANCEL_PENDING','CANCELLED','SHIPPED','EXCEPTION','COMPLETED')`。
+- `approved_at` 非空时，`status` 仅允许 `PROCESSING/CANCEL_PENDING/CANCELLED/SHIPPED/EXCEPTION/COMPLETED`。
+- `rejected_at` 与 `reject_reason` 必须成对出现。
+- `closed_at` 非空时，`status` 仅允许 `CANCELLED/COMPLETED`。
 
 ### 5.8A 物流轨迹能力（毕设精简）
 

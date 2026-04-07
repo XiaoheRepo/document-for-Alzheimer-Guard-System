@@ -661,3 +661,99 @@ GW --> FE: code=OK + trace_id
 FE --> Admin: 展示成功并刷新审计流
 @enduml
 ```
+
+## 16. 字段级页面约束表（8 页逐页联调版）
+
+适用约束：
+1. 表内错误码必须与 `API_from_SRS_SADD_LLD.md` 保持一致。
+2. 所有写接口必须自动注入 `X-Request-Id`，全请求注入 `X-Trace-Id`。
+3. 所有路径与查询中的 ID 均按十进制字符串处理，不允许前端以浮点数中转。
+4. 每页至少实现 `Loading`、`Empty`、`Error`、`Content` 四态。
+
+### 16.1 ADM-01 运营看板页
+
+| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
+| :--- | :---: | :--- | :--- | :--- |
+| `window` | 否 | 枚举：`1h/24h/7d/30d` | `E_REQ_4001` | 指标为空显示“暂无统计数据”；保留时间窗口切换入口 |
+| `time_from`、`time_to`、`granularity` | 否 | 时间为 ISO-8601；`granularity` 枚举：`day/week/month` | `E_REQ_4005` | 非法参数阻断请求并就地提示 |
+| `scope`（安全指标） | 否 | 枚举：`summary/detail`；`detail` 仅 `SUPERADMIN` 可用 | `E_GOV_4032`、`E_GOV_4030` | 权限不足时降级展示 `summary` 视图，不清空其他卡片 |
+| `trace_id`（响应） | 是 | 非空；用于联调追踪 | `E_GOV_4011` | 401 触发会话失效并跳登录页 |
+
+联调断言：切换窗口后应触发三路请求（看板、线索统计、安全指标），且任一卡片失败不影响其余卡片展示。
+
+### 16.2 ADM-02 任务治理页
+
+| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
+| :--- | :---: | :--- | :--- | :--- |
+| `page_no`、`page_size`、`status`、`source` | 否 | `page_no>=1`、`page_size=1-100`；`status` 枚举：`ACTIVE/RESOLVED/FALSE_ALARM`；`source` 枚举：`APP/MINI_PROGRAM/ADMIN_PORTAL` | `E_REQ_4005` | 列表空态显示“暂无任务”；保留筛选重置按钮 |
+| `task_id`（Path） | 是 | 十进制字符串 | `E_TASK_4041`、`E_REQ_4005` | 详情不存在时关闭抽屉并提示“任务不可见或已删除” |
+| `reason`、`channels`（通知补偿） | `reason` 是 | `reason` 长度 `5-256`；`channels` 仅允许 `IN_APP/PUSH` | `E_REQ_4001`、`E_GOV_5002` | 提交失败保留弹窗与输入；500 提示“审计回滚” |
+| `reason`（强制关闭） | 是 | 长度 `5-256`；仅 `SUPERADMIN` 可见入口 | `E_GOV_4032`、`E_TASK_4093` | 状态冲突时刷新任务详情并重绘按钮可见性 |
+
+联调断言：`notify/retry` 成功后必须刷新 `audit` 流，`force-close` 成功后状态变为 `RESOLVED`。
+
+### 16.3 ADM-03 线索复核页
+
+| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
+| :--- | :---: | :--- | :--- | :--- |
+| `page_no`、`page_size`、`assignee_user_id` | 否 | 分页参数合法；`assignee_user_id` 为十进制字符串 | `E_REQ_4005` | 队列空态展示“当前无待复核线索” |
+| `clue_id`（Path） | 是 | 十进制字符串 | `E_CLUE_4043` | 线索不存在时清空详情面板并跳下一条 |
+| `assignee_user_id`、`reason`（分派） | `assignee_user_id` 是 | 目标用户 ID 合法；`reason<=256` | `E_REQ_4001`、`E_GOV_4030` | 分派失败保留当前上下文并允许重试 |
+| `request-evidence` 触发参数 | 否 | 当前版本不开放提交 | `E_GOV_4030` | 按钮默认禁用，点击仅提示“暂不开放，已记录治理策略” |
+
+联调断言：分派成功后队列中对应记录的 `assignee_user_id` 与详情面板保持一致。
+
+### 16.4 ADM-04 标签与物资治理页
+
+| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
+| :--- | :---: | :--- | :--- | :--- |
+| `order_id`、`tag_code`（Path） | 是 | 十进制字符串/标签编码格式合法 | `E_MAT_4041`、`E_MAT_4044`、`E_REQ_4005` | 资源不存在时返回列表并保持筛选条件 |
+| `tracking_number`、`tag_code`（发货） | 是 | `tracking_number` 长度 `6-64`；标签状态需满足可分配 | `E_MAT_4222`、`E_MAT_4091`、`E_REQ_4001` | 失败保留发货表单并聚焦错误字段 |
+| `exception_desc`、`reship_reason`、`new_tag_code` | 条件必填 | 异常说明/补发原因长度 `5-256`；新标签必须可用 | `E_MAT_4224`、`E_MAT_4091`、`E_REQ_4001` | 异常处理失败不清空时间线，标记失败步骤 |
+| `void_reason`、`reason`、`patient_id`（标签作废/重置/恢复） | 条件必填 | 原因长度 `5-256`；恢复需合法 `patient_id` | `E_MAT_4098`、`E_PRO_4031`、`E_PRO_4093`、`E_REQ_4001`、`E_REQ_4005` | 状态冲突时刷新标签详情并锁定非法动作 |
+| `batch_no`、`tags[]`（批量导入） | 是 | `batch_no` 长度 `1-64`；单批建议 `<=500` | `E_REQ_4001`、`E_PRO_4092` | 部分失败时展示失败明细并支持导出 |
+
+联调断言：工单状态流转与标签状态流转需一致（发货后标签进入 `ALLOCATED`，异常时可触发作废链路）。
+
+### 16.5 ADM-05 用户治理页
+
+| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
+| :--- | :---: | :--- | :--- | :--- |
+| `page_no`、`page_size`、`role`、`status`、`keyword` | 否 | 分页参数合法；`role` 枚举：`FAMILY/ADMIN/SUPERADMIN`；`status` 枚举：`NORMAL/BANNED` | `E_REQ_4005` | 无结果展示“未匹配用户”空态 |
+| `user_id`（Path） | 是 | 十进制字符串 | `E_USR_4041`、`E_REQ_4005` | 资源不存在时回收行内编辑态 |
+| `status`、`reason`（封禁/解封） | `status` 是 | `status` 枚举合法；`reason` 建议 `5-256` | `E_USR_4003`、`E_REQ_4001`、`E_GOV_4030` | 失败时回滚状态开关并提示原因 |
+| `new_password`、`reason`（密码重置） | 是 | 密码强度满足策略；仅 `SUPERADMIN` 可操作 | `E_USR_4002`、`E_GOV_4032`、`E_GOV_4231`、`E_REQ_4001` | 重置失败保留弹窗并显示可修复提示 |
+
+联调断言：封禁后目标用户应被强制失效会话；密码重置成功返回 `force_relogin=true`。
+
+### 16.6 ADM-06 审计与安全页
+
+| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
+| :--- | :---: | :--- | :--- | :--- |
+| `cursor`、`page_size`、`page_no` | 否 | `page_size=1-200`；优先使用 `cursor` | `E_REQ_4005` | 日志为空展示“暂无审计记录” |
+| `module`、`action`、`user_id`、`trace_id`、`start_time`、`end_time` | 否 | 时间为 ISO-8601；`user_id` 十进制字符串 | `E_REQ_4005`、`E_GOV_4030` | 查询失败保留筛选条件便于复查 |
+| 安全指标参数：`time_from`、`time_to`、`scope` | 否 | `scope` 枚举：`summary/detail` | `E_GOV_4011`、`E_GOV_4032` | detail 无权限时降级 summary |
+| 429 限流响应 | 否 | 读取 `Retry-After` 与剩余额度头 | `E_GOV_4291` | 查询按钮倒计时禁用，到期后自动可重试 |
+
+联调断言：`trace_id` 检索结果应能与目标高危操作记录一一对应。
+
+### 16.7 ADM-07 系统配置页
+
+| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
+| :--- | :---: | :--- | :--- | :--- |
+| `scope`（读取） | 否 | 枚举：`public/ops/security/ai_policy`；后两者通常仅超管可见 | `E_GOV_4030`、`E_GOV_4032`、`E_REQ_4005` | 无配置时显示默认值说明区 |
+| `config_key`、`config_value`、`reason`（更新） | 是 | `config_key` 必须命中白名单；`reason` 长度 `5-256` | `E_REQ_4001`、`E_GOV_4032`、`E_GOV_5002` | 保存失败保留编辑态与 diff 预览 |
+| `trace_id`（响应） | 是 | 非空，用于配置变更追踪 | `E_GOV_4011` | 会话失效时退出编辑模式并跳登录 |
+
+联调断言：更新成功后，`GET /admin/config` 读取值必须与提交值一致。
+
+### 16.8 ADM-08 DEAD 干预与超管操作页
+
+| 字段 | 必填 | 入参校验 | 典型错误码 | 空态/异常态 |
+| :--- | :---: | :--- | :--- | :--- |
+| `cursor`、`page_size`、`topic`、`partition_key`、`from_time`、`to_time` | 否 | 分页与时间参数合法；`page_size=1-100` | `E_REQ_4005`、`E_GOV_4032` | 无 DEAD 事件显示“队列健康”空态 |
+| `event_id`（Path）、`created_at`、`replay_reason`、`replay_mode`、`next_retry_at` | `event_id/created_at/replay_reason` 是 | `replay_reason` 长度 `5-256`；`replay_mode=RETRY_AT` 时必须给 `next_retry_at` | `E_GOV_4046`、`E_GOV_4096`、`E_GOV_4097`、`E_REQ_4001`、`E_GOV_5002` | 重放失败保留事件上下文并提示阻断原因 |
+| `task_id`（Path）、`reason`（强制关闭） | 是 | `reason` 长度 `5-256`；仅 `SUPERADMIN` 可见 | `E_GOV_4032`、`E_TASK_4041`、`E_TASK_4093`、`E_REQ_4001` | 状态冲突时展示“已被其他操作关闭”并刷新任务详情 |
+| 预检查模式 `dry_run`（建议） | 否 | 开启时仅做校验不落副作用 | `E_GOV_4226` | 预检查失败需显示命中规则与修复建议 |
+
+联调断言：DEAD 重放成功后目标事件 `phase` 应从 `DEAD` 进入 `RETRY`，并生成对应审计记录。

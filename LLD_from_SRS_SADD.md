@@ -1208,7 +1208,7 @@ AI 与 Agent 配置键白名单（用于模型/供应商/策略治理）：
 - agent.manual_only.actions
 
 作用域约束：
-1. `agent.capability.*` 与 `agent.*policy` 键必须使用 `scope=ai_policy`。
+1. 所有 `agent.*` 配置键必须使用 `scope=ai_policy`。
 2. 管理端读取与修改 Agent 策略时，必须通过 `scope=ai_policy` 访问 `sys_config`。
 
 ### 5.15 notification_inbox
@@ -1634,7 +1634,7 @@ entry_token 载荷建议：
 - Agent 触发的所有写操作（含被门禁拦截的写意图）。
 
 审计字段基线：
-- operator_user_id、operator_username、object、action、result、trace_id、request_id、risk_level、detail。
+- operator_user_id、operator_username、object_id、action、result、trace_id、request_id、risk_level、detail。
 - action_source、agent_profile、execution_mode、confirm_level、blocked_reason、action_id、result_code、executed_at。
 
 ### 11.4 二维码物理制码与离线密钥管理规范（本期）

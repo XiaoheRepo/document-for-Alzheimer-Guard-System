@@ -5837,6 +5837,10 @@ X-Trace-Id: trc_demo_20260406_001
 
 用途：读取工单资源链状态。
 
+resource_link 语义：
+1. 统一入口 URL，格式为 `https://<domain>/r/{resource_token}`。
+2. 当前用于二维码直达；NFC 后续上线时复用同一 URL 语义，不新增并行入口协议。
+
 权限：FAMILY（需患者授权）。
 
 错误码：E_GOV_4011、E_MAT_4030、E_MAT_4041、E_REQ_4005。

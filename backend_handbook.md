@@ -523,6 +523,7 @@ void assertOwnership(Long operatorId, Long patientId, Role role) {
 2. BOUND 路由到 /p/{short_code}/clues/new；LOST 路由到 /p/{short_code}/emergency/report。
 3. UNBOUND/ALLOCATED/VOID 一律拦截，不得进入匿名上报页面。
 4. 对 APP/MINI_PROGRAM 同步回写 X-Anonymous-Token（与 entry_token 等值）。
+5. NFC 作为后续能力上线时，感应打开 URL 必须仍为 /r/{resource_token}，复用同一动态路由逻辑，不得新增独立匿名入口路由。
 
 ### 7.8 手动兜底入口实现规范（必须）
 

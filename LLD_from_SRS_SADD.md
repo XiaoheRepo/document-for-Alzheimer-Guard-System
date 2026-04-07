@@ -1688,6 +1688,7 @@ entry_token 载荷建议：
 范围约束：
 1. 本期仅实现 `QR_CODE` 载体，`NFC` 不在当前交付范围。
 2. 所有公开扫描入口统一为 `https://<domain>/r/{resource_token}`。
+3. NFC 后续上线时，NDEF URL 必须复用同一入口 `https://<domain>/r/{resource_token}`，不得新增并行匿名入口。
 
 二维码制码规范：
 1. 编码内容必须为完整 HTTPS URL，UTF-8 编码，不允许换行与附加明文。

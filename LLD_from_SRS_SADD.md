@@ -304,15 +304,18 @@ WS -> C : 推送任务已创建
 | location.lat | number | 是 | 合法范围；内部服务只接收网关标准化后的 WGS84 |
 | location.lng | number | 是 | 合法范围；内部服务只接收网关标准化后的 WGS84 |
 | description | string | 否 | <=2000 |
-| photo_url | string | 否 | 白名单域名 |
+| photo_url | string | 条件必填 | 白名单域名；手动兜底入口（`source_type=MANUAL`）必须上传图片，扫码入口可选 |
 
 处理流程：
 1. 网关已完成坐标系校验与坐标转换（GCJ-02/BD-09 -> WGS84）。
 2. 网关从 Cookie(entry_token) 或 X-Anonymous-Token 提取并校验匿名凭据，不接受 Body 传递 token。
-3. 校验匿名凭据一次性与绑定关系。
-4. 写 clue_record(raw) 并直接发布 Kafka 事件 `clue.reported.raw`、`clue.vectorize.requested`（不走 Outbox，与 SADD §5.2 保持一致）。
-5. 由研判服务与向量化 Worker 异步处理，不在入口同步执行重计算或 Embedding 网络调用。
-6. clue-analysis-service 消费 clue.reported.raw 时必须写入 risk_score 与 suspect_reason（若不可疑可置空 suspect_reason）。
+3. 校验 entry_token 一次性消费：通过 Redis `SETNX entry_token:consumed:{jti}` 检查，已消费则拒绝 `E_CLUE_4012`。
+4. IP 绑定校验：比对 entry_token 中 `client_ip` 与当前请求 IP，不一致则拒绝 `E_CLUE_4013`。
+5. 设备指纹校验：若请求携带 `device_fingerprint` 且与 entry_token 载荷不一致，拒绝 `E_CLUE_4013`。
+6. 消费成功后，写 clue_record(raw) 并直接发布 Kafka 事件 `clue.reported.raw`、`clue.vectorize.requested`（不走 Outbox，与 SADD §5.2 保持一致）。
+7. 由研判服务与向量化 Worker 异步处理，不在入口同步执行重计算或 Embedding 网络调用。
+8. clue-analysis-service 消费 clue.reported.raw 时必须写入 risk_score 与 suspect_reason（若不可疑可置空 suspect_reason）。
+9. entry_token 的 `jti` 写入 `clue_record.entry_token_jti` 字段，满足审计追溯。
 
 #### 3.3.4 POST /api/v1/clues/{clue_id}/override
 
@@ -1771,6 +1774,102 @@ Action 白名单与后端接口映射（与 API 9.7 同步维护）：
 6. 若 `action` 不在白名单、能力包未启用或命中 `MANUAL_ONLY`，必须转 `POLICY_BLOCK`，禁止任何实体写入。
 7. 执行成功后，返回 `action_id/result_code/executed_at` 并通过 SSE `event=done` 透传给客户端。
 
+### 10.10 LUI 安全与审计设计（HC-07 落地）
+
+LUI（自然语言交互界面）安全设计的核心原则：**LUI 是 GUI 的语义化入口，不是独立的权限通道**。所有 LUI 触发的操作最终必须复用 GUI 相同的 RBAC、Ownership 与幂等链路（HC-01 约束），AI Agent 自身无独立写权限。
+
+#### 10.10.1 身份传播与权限隔离
+
+1. 家属通过 Android 端 LUI 入口发送消息时，请求携带其 `access_token`（JWT）。
+2. 网关验证 JWT 后注入 `user_id`，`ai-orchestrator-service` 获取的 `user_id` 始终为真实家属身份。
+3. AI Agent 通过 Function Calling 调用域 API 时，使用服务账号 + `X-Action-Source=AI_AGENT` + `X-Operator-User-Id={user_id}` 透传真实操作人。
+4. 域服务在执行写操作前，必须校验 `X-Operator-User-Id` 对目标资源的 RBAC 与 Ownership 权限。
+5. AI Agent 不得通过内部旁路方法绕过域服务鉴权，必须走标准 REST API。
+
+#### 10.10.2 Prompt 注入防御
+
+1. System Guard 模板中注入不可变安全约束：禁止越权状态变更、禁止输出内部 ID、禁止执行未授权 action。
+2. 用户输入在拼入 Prompt 前，由 `PromptSanitizer` 过滤控制字符（`\x00-\x1F`）与已知注入模式（如 `ignore previous instructions`）。
+3. Function Calling 输出的 `action` 必须命中 §10.9 白名单，未命中一律转 `POLICY_BLOCK`。
+4. AI 返回的结构化意图必须经 JSON Schema 校验，拒绝非预期字段。
+
+#### 10.10.3 数据隔离
+
+1. AI Agent 仅可查询当前 `session.patient_id` 关联的患者数据，不得跨患者查询。
+2. `ChatClient` 构建时注入 `patient_id` 作为会话上下文，Tool 方法的路径参数必须与此一致。
+3. 若 Tool 返回数据中包含非当前患者信息，`ai-orchestrator-service` 必须过滤后再拼入回复。
+
+#### 10.10.4 LUI 操作审计
+
+1. 所有 LUI 触发的写操作在 `sys_log` 中 `action_source=AI_AGENT`，`agent_profile` 记录 Prompt 模板版本。
+2. `ai_session.messages` JSONB 字段记录完整 Tool Call 链：`tool_name`、`tool_args`、`tool_result`、`action_id`、`result_code`。
+3. 被 Policy Guard 拦截的写意图同样记录审计（`blocked_reason` 字段），不丢弃。
+4. 管理端可通过 `GET /api/v1/admin/ai/sessions/{session_id}` 查看完整对话与 Tool Call 历史（API §3.5.4）。
+
+#### 10.10.5 LUI 与 GUI 状态一致性
+
+1. LUI 写操作执行成功后，`event=done` SSE 事件携带 `action_id/result_code/executed_at`。
+2. Android 端收到 `event=done` 后，根据 `action` 类型主动刷新关联 GUI 页面数据（如任务详情、线索列表）。
+3. 若 LUI 执行期间 GUI 侧同步发生了状态变更（版本漂移），LUI 的意图 `expires_at` 超时或 CAS 失败时自动终止，不强制覆盖。
+4. GUI 操作同样会通过 WebSocket 推送事件，LUI 对话上下文的状态快照需引用 `event_version` 防止过时建议。
+
+### 10.11 LUI SSE 事件载荷规范（前后端交互字段）
+
+SSE 流通过 `POST /api/v1/ai/sessions/{session_id}/messages`（`Accept: text/event-stream`）建立，事件类型与载荷结构如下：
+
+#### event=ack（受理事件）
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| session_id | string | 会话 ID |
+| message_id | string | 本次消息 ID |
+| stream_status | string | `STREAMING` |
+
+#### event=delta（流式文本分段）
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| index | int | 分段序号（从 1 递增） |
+| content | string | 文本片段（UTF-8），客户端拼接渲染 |
+
+#### event=tool_intent（动作确认卡片）
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| intent_id | string | 意图唯一标识（用于确认/取消回传） |
+| action | string | 白名单动作名（如 `create_rescue_task`、`propose_close`） |
+| target | object | 操作目标：`{ task_id, patient_id }` 等 |
+| args | object | 动作参数（与 §10.9 白名单定义一致） |
+| reason | string | AI 给出的操作原因（可呈现给用户） |
+| confidence | number | 置信度（0-1） |
+| risk_level | string | `LOW` / `MEDIUM` / `HIGH` |
+| confirm_required | boolean | 是否需要用户确认（A0 为 `false`，A2+ 为 `true`） |
+| expires_at | string | 意图过期时间（ISO-8601），过期后前端禁用确认按钮 |
+
+前端消费规则：
+1. `confirm_required=false`：A0 只读操作，自动执行，在消息流中展示结果摘要。
+2. `confirm_required=true`：渲染确认卡片（操作描述、目标、风险等级），双按钮"确认执行" + "取消"。
+3. 用户确认后，前端调用对应的常规 GUI 写接口，请求中透传 `intent_id`。
+
+#### event=done（完成事件）
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| token_usage | object | `{ prompt_tokens, completion_tokens, total_tokens, model_name }` |
+| fallback_response | object/null | 若降级则包含 `{ mode }` |
+| action_id | string/null | 受控动作执行时返回 |
+| result_code | string/null | 执行结果码（`OK`/业务错误码） |
+| executed_at | string/null | 执行完成时间（ISO-8601） |
+| version | string | 会话版本号（用于客户端版本守卫） |
+
+#### event=error（错误事件）
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| code | string | 错误码（`E_AI_*` 系列） |
+| message | string | 错误描述 |
+| retry_after | int/null | 建议重试间隔（秒），仅限流时返回 |
+
 ## 11. 安全、审计与合规设计
 
 ### 11.1 接入安全
@@ -1875,6 +1974,8 @@ IP/设备绑定校验：
 - action_source、agent_profile、execution_mode、confirm_level、blocked_reason、action_id、result_code、executed_at。
 
 ### 11.4 二维码物理制码与离线密钥管理规范（本期）
+
+> 数字令牌规范（resource_token 载荷、加密方式、URL 格式）参见 §11.2.1；本节聚焦物理制码与密钥运维。
 
 范围约束：
 1. 本期仅实现 `QR_CODE` 载体，`NFC` 不在当前交付范围。

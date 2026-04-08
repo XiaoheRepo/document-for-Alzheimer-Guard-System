@@ -318,6 +318,7 @@ lost_status 事件驱动转换规则（参见 LLD §6.1.1）：
 | override_reason | varchar(256) | null | 强制回流原因 |
 | reject_reason | varchar(256) | null | 驳回原因 |
 | rejected_by | bigint | null | 驳回人 |
+| entry_token_jti | varchar(64) | null | 匿名凭据唯一标识（审计追溯） |
 | created_at | timestamptz | not null | 创建时间 |
 | updated_at | timestamptz | not null | 更新时间 |
 

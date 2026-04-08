@@ -346,6 +346,32 @@ class TraceAndIdempotencyInterceptor(
 5. LUI 执行结果与 GUI 操作完全等价——都调用同一套域 API，数据一致。
 6. AI 对话消息中的 Tool Call 信息（action、target、result）须在消息流 UI 中可视化展示，帮助用户理解 Agent 执行了什么操作。
 
+#### 10.4.1 LUI 与 GUI 状态同步规范
+
+LUI 与 GUI 共享同一后端状态源，但存在因网络延迟或并发操作导致的本地状态不一致风险。以下规范确保双模交互的状态一致性：
+
+**主动刷新（LUI → GUI）**：
+1. 收到 SSE `event=done` 且 `action_id != null` 时，根据 `action` 类型触发对应 GUI 页面数据刷新：
+   - `create_rescue_task` → 刷新任务列表与患者详情。
+   - `propose_close` → 刷新任务详情与时间线。
+   - `query_task_snapshot` / `query_trajectory` → 无需刷新（只读操作）。
+2. 刷新采用"静默拉取"模式：后台调用 GET 接口更新本地缓存，不打断用户当前 GUI 交互。
+
+**被动同步（GUI → LUI）**：
+1. GUI 侧执行写操作（如手动关闭任务）成功后，通过本地事件总线通知 AI 模块。
+2. AI 模块在下一轮对话时，通过 `session.version`（乐观锁版本号）检测上下文是否过时。
+3. 若 `server_version > local_version`，先拉取最新快照再发送 Prompt，避免 AI 基于过时状态给出建议。
+
+**冲突处理**：
+1. 若 LUI 发起的 `tool_intent` 在用户确认前，GUI 侧已变更了同一资源的状态（版本漂移），后端 CAS 更新失败时返回 `E_AI_4091`。
+2. 前端收到 `E_AI_4091` 后：禁用该确认卡片 → 提示"操作对象状态已变更，请重新发起" → 刷新 GUI 页面。
+3. LUI `tool_intent.expires_at` 过期后，前端自动禁用确认按钮并标注"已过期"。
+
+**版本守卫**：
+1. Android 端维护本地 `event_version` 计数器（来源：WebSocket 推送事件的 `version` 字段）。
+2. LUI 请求发送前携带本地 `event_version`，后端比对若版本差异过大（>5），返回 `NEED_REFRESH` 提示客户端先拉取快照。
+3. 此机制防止 AI 基于严重过时的上下文做出错误建议。
+
 ### 10.5 关键状态机守卫矩阵（客户端可操作性）
 
 #### 10.5.1 任务关闭状态机

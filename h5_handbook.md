@@ -170,10 +170,11 @@ public-h5/
 
 ### 4.2 匿名凭据约束（浏览器场景）
 
-1. `GET /r/{resource_token}` 成功后由网关通过 `Set-Cookie` 下发 `entry_token`（`HttpOnly; Secure; SameSite=Strict; Max-Age<=120`）。
+1. `GET /r/{resource_token}` 成功后由网关通过 `Set-Cookie` 下发 `entry_token`（`HttpOnly; Secure; SameSite=Strict; Max-Age=300`）。
 2. `GET /p/{short_code}/clues/new`、`GET /p/{short_code}/emergency/report` 依赖该 Cookie 完成入口鉴权。
 3. 浏览器 H5 不主动设置 `X-Anonymous-Token`；该头主要用于非浏览器端。
 4. 若服务端返回 `HTTP 401 + E_CLUE_4012`，视为匿名凭据失效，必须引导重新扫码或重新手动录入。
+5. 若服务端返回 `HTTP 403 + E_CLUE_4013`，视为凭据绑定校验失败（IP 或设备指纹不匹配），提示"请在原扫码设备上提交"并引导重新扫码。
 
 ### 4.3 Axios 实现模板
 
@@ -318,7 +319,7 @@ router.beforeEach((to, _from, next) => {
 | :--- | :--- | :--- | :--- |
 | 页面临时态 | 内存（Pinia） | loading、校验状态、倒计时 | 页面生命周期 |
 | 草稿态 | `sessionStorage` | 描述、图片 URL、坐标草稿 | <= 30 分钟 |
-| 弱网重试队列 | IndexedDB | 待重试请求快照（脱敏） | <= 120 秒 |
+| 弱网重试队列 | IndexedDB | 待重试请求快照（脱敏） | <= 300 秒 |
 
 ### 6.2 键命名规范
 
@@ -342,7 +343,7 @@ router.beforeEach((to, _from, next) => {
 | `submission_payload` | `request_id`、`short_code`、`payload_hash`、`payload` | 脱敏请求快照 |
 
 约束：
-1. `entry_token` TTL 短，重试仅允许在 120 秒窗口内执行。
+1. `entry_token` TTL 短，重试仅允许在 300 秒窗口内执行。
 2. 超过窗口必须废弃队列并提示用户重新扫码。
 
 ## 7. 页面布局与样式规范

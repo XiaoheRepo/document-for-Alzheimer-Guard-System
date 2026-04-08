@@ -551,11 +551,22 @@ void assertOwnership(Long operatorId, Long patientId, Role role) {
 
 ### 7.7 GET /r/{resource_token} 动态路由实现规范（必须）
 
-1. 先验签 resource_token，再查询 tag_asset.status 与关联 short_code。
+1. 先验签 resource_token（AES-256-GCM 解密 + `kid` 匹配批次密钥），再查询 tag_asset.status 与关联 short_code。
 2. BOUND 路由到 /p/{short_code}/clues/new；LOST 路由到 /p/{short_code}/emergency/report。
 3. UNBOUND/ALLOCATED/VOID 一律拦截，不得进入匿名上报页面。
 4. 对 APP/MINI_PROGRAM 同步回写 X-Anonymous-Token（与 entry_token 等值）。
 5. NFC 作为后续能力上线时，感应打开 URL 必须仍为 /r/{resource_token}，复用同一动态路由逻辑，不得新增独立匿名入口路由。
+
+resource_token 载荷规范（加密前）：
+- `kid`（批次密钥 ID）、`tag_code`、`short_code`、`tag_type`、`applicant_user_id`、`iat`、`ver`。
+- 加密方式：`Base64URL(AES-256-GCM_Encrypt(payload_json, batch_key))`。
+- 完整规范参见 LLD §11.2.1。
+
+entry_token 额外校验规范（线索提交时）：
+- 一次性消费：Redis `SETNX entry_token:consumed:{jti} 1 EX 600`，返回 0 则拒绝 `E_CLUE_4012`。
+- IP 绑定：比对 entry_token 中 `client_ip` 与当前请求 IP，不一致拒绝 `E_CLUE_4013`。
+- 设备指纹校验：若携带 `device_fingerprint` 且与载荷不一致，拒绝 `E_CLUE_4013`。
+- `jti` 写入 `clue_record.entry_token_jti` 字段，完整规范参见 LLD §11.2.2。
 
 #### 7.7.1 resource_link 生成规则（确定版）
 
@@ -595,7 +606,9 @@ POST /api/v1/public/clues/manual-entry 必须满足：
 1. 输入 short_code（6 位）+ pin_code（6 位）+ captcha_token + device_fingerprint。
 2. 成功后同时返回 manual_entry_token 与 Set-Cookie(entry_token)，且两者值一致。
 3. 频控阈值至少覆盖：IP 级、设备级、short_code 连续失败冷却。
-4. 令牌 TTL <= 120 秒，超时或重放统一返回 E_CLUE_4012。
+4. 额外频控：同一 IP + `device_fingerprint` 对，5 分钟内最多 2 次成功验证。
+5. 令牌 TTL = 300 秒，Cookie `Max-Age=300`，超时或重放统一返回 `E_CLUE_4012`。
+6. 手动兜底入口提交线索时，`photo_url` 为必填字段（`source_type=MANUAL` 必须上传图片）。
 
 ### 7.9 监护关系接口竞态规范（必须）
 

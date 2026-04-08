@@ -254,6 +254,7 @@ Cursor 模式：
 | E_CLUE_4009 | override_reason 非法 |
 | E_CLUE_4010 | reject_reason 非法 |
 | E_CLUE_4012 | entry_token 无效或重放 |
+| E_CLUE_4013 | 凭据绑定校验失败（IP 或设备指纹不匹配） |
 | E_CLUE_4041 | tag_code/标签状态不可用 |
 | E_CLUE_4042 | short_code 无效或不可公开 |
 | E_CLUE_4043 | clue_id 不存在或不在可复核状态 |
@@ -1784,7 +1785,7 @@ X-Trace-Id: trc_demo_20260406_001
 ```http
 HTTP/1.1 302 Found
 Location: /p/A1B2C3/clues/new
-Set-Cookie: entry_token=token_demo_001; HttpOnly; Secure; SameSite=Strict; Max-Age=120
+Set-Cookie: entry_token=token_demo_001; HttpOnly; Secure; SameSite=Strict; Max-Age=300
 X-Anonymous-Token: token_demo_001
 X-Trace-Id: trc_demo_20260406_001
 ```
@@ -1828,11 +1829,11 @@ X-Trace-Id: trc_demo_20260406_001
 
 | 字段 | 类型 | 说明 |
 | :--- | :--- | :--- |
-| manual_entry_token | string | 一次性令牌，TTL <= 120s；与 Set-Cookie 下发的 entry_token 值一致 |
+| manual_entry_token | string | 一次性令牌，TTL = 300s；与 Set-Cookie 下发的 entry_token 值一致 |
 
 令牌下发约束：
 1. 验证通过后，网关必须同时通过 Set-Cookie 下发 entry_token。
-2. Cookie 属性必须为 HttpOnly; Secure; SameSite=Strict; Max-Age<=120。
+2. Cookie 属性必须为 `HttpOnly; Secure; SameSite=Strict; Max-Age=300`。
 3. 浏览器前端必须依赖 Cookie 自动携带令牌，不得尝试用 JavaScript 写入 HttpOnly Cookie。
 4. manual_entry_token 主要用于非浏览器调试链路，浏览器链路以 Cookie 为准。
 
@@ -1840,6 +1841,7 @@ X-Trace-Id: trc_demo_20260406_001
 1. IP <= 5 次/分钟。
 2. 设备 <= 20 次/小时。
 3. short_code 连续失败 >= 5 次触发 15 分钟冷却。
+4. 同一 IP + `device_fingerprint` 对，5 分钟内最多 2 次成功验证。
 
 错误码：E_CLUE_4005、E_CLUE_4006、E_GOV_4038、E_GOV_4004、E_GOV_4291、E_GOV_4292。
 
@@ -2010,7 +2012,7 @@ X-Trace-Id: trc_demo_20260406_001
 | coord_system | string | 是 | 枚举：WGS84 / GCJ-02 / BD-09 |
 | location | object | 是 | 原始定位对象，包含 lat/lng（按 coord_system 声明） |
 | description | string | 否 | <= 2000 |
-| photo_url | string | 否 | 白名单域名 |
+| photo_url | string | 条件必填 | 白名单域名；手动兜底入口（`source_type=MANUAL`）必须上传图片，扫码入口可选 |
 
 location 子字段：
 
@@ -2029,6 +2031,12 @@ location 子字段：
 2. 网关完成凭据校验后，才进入 tag_code 一致性与业务校验。
 3. source_type 由服务端按入口上下文推导：Cookie(entry_token)/X-Anonymous-Token 场景写入 SCAN，人工录入接口（3.2.2）写入 MANUAL；客户端不可覆盖。
 
+entry_token 一次性消费与绑定校验：
+1. 通过 Redis `SETNX entry_token:consumed:{jti}` 检查，已消费则拒绝 `E_CLUE_4012`。
+2. IP 绑定：比对 entry_token 中 `client_ip` 与当前请求 IP，不一致则拒绝 `E_CLUE_4013`。
+3. 设备指纹校验：若请求携带 `device_fingerprint` 且与 entry_token 载荷不一致，拒绝 `E_CLUE_4013`。
+4. entry_token 的 `jti` 写入 `clue_record.entry_token_jti`，满足审计追溯。
+
 隐私约束：
 1. 匿名上报成功响应不得返回 patient_id、患者姓名等可识别信息。
 2. 返回体仅提供线索受理回执字段（如 clue_id、status、reported_at）。
@@ -2037,7 +2045,7 @@ location 子字段：
 
 副作用事件：clue.reported.raw。
 
-错误码：E_CLUE_4012、E_CLUE_4041、E_CLUE_4001、E_CLUE_4002、E_CLUE_4003、E_CLUE_4004、E_CLUE_4007。
+错误码：E_CLUE_4012、E_CLUE_4013、E_CLUE_4041、E_CLUE_4001、E_CLUE_4002、E_CLUE_4003、E_CLUE_4004、E_CLUE_4007。
 
 请求示例：
 ```http
@@ -2097,6 +2105,7 @@ X-Trace-Id: trc_demo_20260406_001
 | 201 | OK | 请求成功 |
 | 400 | E_CLUE_4001、E_CLUE_4002、E_CLUE_4003、E_CLUE_4004、E_CLUE_4007 | 参数或格式不合法 |
 | 401 | E_CLUE_4012 | 鉴权失败或凭据缺失/失效 |
+| 403 | E_CLUE_4013 | 凭据绑定校验失败（IP/设备指纹不匹配） |
 | 404 | E_CLUE_4041 | 资源不存在或不可见 |
 ### 3.2.6 POST /api/v1/clues/{clue_id}/override
 

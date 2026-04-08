@@ -22,7 +22,8 @@
 
 1. 保证 Android 客户端与后端契约严格一致，避免联调期“字段对了但语义错了”。
 2. 保证关键场景稳定可用：登录、任务追踪、匿名线索上报、通知实时推送、AI 辅助。
-3. 保证可维护性：模块清晰、状态可追踪、错误可定位、发布可回滚。
+3. 构建 **GUI + LUI 双模交互架构**：传统图形界面（GUI）覆盖完整功能入口，AI Agent 自然语言界面（LUI）使家属可通过对话快速完成寻人发布、轨迹查询等核心操作，降低紧急场景下的操作成本。
+4. 保证可维护性：模块清晰、状态可追踪、错误可定位、发布可回滚。
 
 ### 1.2 范围
 
@@ -331,11 +332,19 @@ class TraceAndIdempotencyInterceptor(
 2. 本地读状态更新采用“先本地后回滚”策略，接口失败时回滚并提示。
 3. 触达通道仅支持“应用推送 + 站内通知”，不实现短信分支。
 
-### 10.4 AI 模块（feature-ai）
+### 10.4 AI 模块（feature-ai）— GUI + LUI 双模
 
 1. AI 请求超时必须可配置。
 2. `E_AI_4292`、`E_AI_4293` 必须识别并展示“稍后重试/已降级”提示。
 3. 若返回 `fallback_response.mode`，在 UI 上明确标注为降级结果。
+4. **LUI 交互核心流程**：
+   - 用户输入自然语言（如"帮我发布寻人任务"）→ 调用 `POST /api/v1/ai/sessions/{session_id}/messages`。
+   - SSE `event=delta` 流式渲染 AI 回复文本。
+   - SSE `event=tool_intent` 渲染动作确认卡片（A2+ 写操作需确认，A0 只读操作自动执行）。
+   - 家属确认后，`event=done` 返回 `action_id/result_code/executed_at` 展示执行结果。
+   - 执行结果同步刷新关联 GUI 页面状态（如任务列表、轨迹页）。
+5. LUI 执行结果与 GUI 操作完全等价——都调用同一套域 API，数据一致。
+6. AI 对话消息中的 Tool Call 信息（action、target、result）须在消息流 UI 中可视化展示，帮助用户理解 Agent 执行了什么操作。
 
 ### 10.5 关键状态机守卫矩阵（客户端可操作性）
 
@@ -353,9 +362,10 @@ class TraceAndIdempotencyInterceptor(
 | 转移状态 | 可见动作（发起方） | 可见动作（目标受方） | 客户端约束 |
 | :--- | :--- | :--- | :--- |
 | `PENDING_CONFIRM` | 撤销 | 确认 / 拒绝 | 仅目标受方展示确认与拒绝按钮 |
-| `CONFIRMED` | 无 | 无 | 展示完成态，不可重复操作 |
+| `ACCEPTED` | 无 | 无 | 展示完成态，不可重复操作 |
 | `REJECTED` | 可重新发起 | 无 | 必须展示拒绝原因 |
 | `CANCELLED` | 可重新发起 | 无 | 展示撤销人和撤销时间 |
+| `EXPIRED` | 可重新发起 | 无 | 展示超时失效提示 |
 
 #### 10.5.3 通知已读状态机
 
@@ -529,14 +539,28 @@ fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
 | ORD-03 | 工单详情页 | GET /material/orders/{order_id}, POST /cancel, POST /confirm | 摘要卡 + 状态时间线 + 物流区 + 操作区 | FAMILY 仅可执行取消与签收；按钮可见性按状态机控制 |
 | ORD-04 | 物流轨迹页 | GET /tracking, /resource-link | 物流节点列表 + 地图路线 + 异常提示条 | 节点按时间倒序；异常状态高亮并给联系客服入口 |
 
-### 14.8 AI 协同域页面（4 页）
+### 14.8 AI 协同域页面（4 页）— GUI + LUI 双模交互
+
+**双模交互架构说明**：
+- **GUI 模式**：家属通过传统界面（菜单、按钮、表单）完成所有业务操作。
+- **LUI 模式**：家属在 AI 对话页通过自然语言（如"帮我发布寻人任务"、"查看最新轨迹"）完成核心操作。AI Agent 后端通过 Spring AI Alibaba 的 Function Calling 自动调用域 API。
+- 两种模式操作的是同一套后端 API、同一套数据，结果完全等价。
+- LUI 写操作（如发布任务）必须展示确认卡片，家属点击确认后才真正执行。
 
 | 页面 ID | 页面名称 | 关键接口 | 布局规范 | 交互规范 |
 | :--- | :--- | :--- | :--- | :--- |
 | AI-01 | AI 会话列表页 | POST /api/v1/ai/sessions, GET /api/v1/ai/sessions | 顶栏 + 搜索 + 会话列表 + 新建按钮 | 新建会话成功后自动进入对话页；列表支持分页加载 |
-| AI-02 | AI 对话页 | POST /api/v1/ai/sessions/{session_id}/messages, GET /messages | 消息流 + 输入框 + 发送按钮 + 降级提示条 | 流式消息分段渲染；E_AI_4292/4293 显示退避或降级提示 |
+| AI-02 | AI 对话页（LUI 主入口） | POST /api/v1/ai/sessions/{session_id}/messages, GET /api/v1/ai/sessions/{session_id}/messages | 消息流 + 输入框 + 发送按钮 + 降级提示条 + **动作确认卡片** | SSE 流式消息分段渲染；收到 `event=tool_intent` 时渲染确认卡片（含 action、reason、risk_level）；家属确认后触发执行；`event=done` 中 `action_id/result_code` 展示执行结果；E_AI_4292/4293 显示退避或降级提示 |
 | AI-03 | 会话详情与配额页 | GET /api/v1/ai/sessions/{session_id}, /quota, POST /archive | 会话元信息卡 + 配额进度条 + 归档操作区 | 配额低于阈值高亮；归档需二次确认 |
 | AI-04 | 记忆笔记页 | POST/GET /api/v1/patients/{patient_id}/memory-notes | 笔记列表 + 新增输入区 + 标签过滤 | 新增后乐观插入列表；失败回滚并提示重试 |
+
+**AI-02 Tool Intent 确认卡片规范**：
+1. 收到 SSE `event=tool_intent` 时，在消息流中插入一个可交互的确认卡片。
+2. 卡片内容：操作描述（如"发布寻回任务"）、目标对象、风险等级（`LOW/MEDIUM/HIGH`）、置信度。
+3. 卡片底部双按钮："确认执行" + "取消"。
+4. A0 只读操作（如查询轨迹）无需确认卡片，AI 直接执行并返回结果。
+5. A2+ 写操作必须展示确认卡片；家属未确认前 Agent 不得执行。
+6. 确认通过后，客户端透传 `intent_id` 调用对应常规写接口（或由后端代执行并在 `event=done` 回传结果）。
 
 ### 14.9 端边界声明（Android-only）
 

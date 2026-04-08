@@ -38,7 +38,7 @@
 
 | 编号 | 约束 |
 | :--- | :--- |
-| HC-01 | TASK 域是任务状态机唯一权威；AI 仅发布建议事件。 |
+| HC-01 | TASK 域是任务状态机唯一权威；AI 通过 Function Calling 调用标准域 API，不直接写域实体表；所有状态事件由目标域服务发布。 |
 | HC-02 | 核心状态变更必须本地事务 + Outbox 同提交。 |
 | HC-03 | 所有写接口必须支持 request_id 幂等。 |
 | HC-04 | 全链路必须透传 trace_id。 |
@@ -84,7 +84,7 @@
 | clue-intake-service | 线索与时空研判域（入口） | clue_record（原始段） | 匿名线索入口、标准化与入站削峰 | clue.reported.raw、clue.vectorize.requested | - |
 | clue-analysis-service | 线索与时空研判域（研判） | clue_record | 时空研判、围栏判定、可疑线索识别 | clue.validated、clue.suspected、track.updated、fence.breached | clue.reported.raw、task.state.changed、clue.rejected |
 | clue-trajectory-service | 线索与时空研判域（轨迹） | patient_trajectory | 轨迹聚合、窗口归档、终态 Flush | track.updated（聚合后） | clue.validated、task.resolved、task.false_alarm |
-| ai-orchestrator-service | AI 协同支持域 | ai_session、配额账本 | 上下文组装、推理、策略事件 | ai.strategy.generated、ai.poster.generated、memory.appended、memory.expired | clue.validated、track.updated、task.resolved |
+| ai-orchestrator-service | AI 协同支持域 | ai_session、配额账本 | AI Agent 自然语言交互、Function Calling 编排（Spring AI Alibaba + ChatClient）、上下文组装、推理、策略事件 | ai.strategy.generated、ai.poster.generated、memory.appended、memory.expired | clue.validated、track.updated、task.resolved |
 | ai-vectorizer-service | AI 协同支持域 | vector_store | 文本切片、向量写入、失效清理 | - | profile.updated、profile.corrected、profile.deleted.logical、memory.appended、memory.expired、clue.vectorize.requested |
 | material-service | 标签与物资运营域 | tag_asset、tag_apply_record | 标签主数据、绑定流程、工单流转、发货、异常处置 | tag.bound、material.order.created | - |
 | notify-service | 通用治理域（通知子能力） | 本地幂等日志 | 事件消费、模板组装、通知分发 | - | task.created、task.resolved、task.false_alarm、fence.breached、track.updated |
@@ -1631,9 +1631,66 @@ CDC 复审触发条件（任一满足即进入 ADR 复审）：
 2. 模板变更采用灰度发布，禁止全量瞬时切换。
 3. 当证据不足时必须输出 `NEED_MORE_EVIDENCE`，禁止生成确定性误导结论。
 
-### 10.7 模型供应商适配约束（Alibaba Spring AI 兼容）
+### 10.7 Spring AI Alibaba 集成规范
 
-1. 模型接入层必须与供应商解耦，业务侧仅依赖统一抽象：`model_name`、`token_usage`、`fallback_response`。
+框架选型：`spring-ai-alibaba-starter`，对接阿里云百炼（DashScope）通义千问大模型。
+
+Maven 依赖：
+```xml
+<dependency>
+    <groupId>com.alibaba.cloud.ai</groupId>
+    <artifactId>spring-ai-alibaba-starter</artifactId>
+    <version>${spring-ai-alibaba.version}</version>
+</dependency>
+```
+
+配置基线（`application.yml`）：
+```yaml
+spring:
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY}
+      chat:
+        options:
+          model: ${ai.model.chat.primary:qwen-plus}
+          temperature: 0.7
+```
+
+ChatClient 构建规范：
+1. `ai-orchestrator-service` 中通过 `ChatClient.builder(chatModel)` 构建 Agent 实例。
+2. 使用 `.defaultSystem(systemPrompt)` 注入系统角色与约束。
+3. 使用 `.defaultTools(taskTool, clueTool, patientTool)` 注册域 API 适配工具。
+4. 使用 `.defaultAdvisors(new MessageChatMemoryAdvisor(chatMemory))` 注入会话记忆。
+
+Tool 适配器规范（`@Tool` 注解）：
+1. 每个 Tool 方法映射唯一域 API，禁止一个 Tool 包含多步域写入。
+2. Tool 方法通过 Feign/RestTemplate 调用目标域标准 REST API，携带 `X-Action-Source=AI_AGENT`。
+3. ai-orchestrator-service 使用服务账号（`service-account`），权限范围限定于 Function Calling 白名单内接口。
+4. 所有 Tool 调用结果必须记录到 `ai_session.messages`（含 `tool_calls` 结构）。
+
+Tool 适配器示例：
+```java
+@Component
+public class RescueTaskTool {
+
+    @Tool(description = "发布寻回任务，需要患者ID")
+    public String createRescueTask(@ToolParam("患者ID") String patientId,
+                                   @ToolParam("备注") String remark) {
+        // 调用 task-service: POST /api/v1/rescue/tasks
+        return taskFeignClient.createTask(
+            new CreateTaskRequest(patientId, remark));
+    }
+
+    @Tool(description = "查询任务最新轨迹")
+    public String queryTrajectory(@ToolParam("任务ID") String taskId) {
+        // 调用 task-service: GET /api/v1/rescue/tasks/{taskId}/trajectory/latest
+        return taskFeignClient.getTrajectory(taskId);
+    }
+}
+```
+
+供应商适配约束：
+1. 模型接入层与供应商解耦，业务侧仅依赖统一抽象：`model_name`、`token_usage`、`fallback_response`。
 2. 接入阿里云百炼/千问时，需将供应商响应映射到统一字段：
   - prompt/completion/total token -> `token_usage.prompt_tokens/completion_tokens/total_tokens`
   - 供应商请求 ID -> `token_usage.provider_request_id`
@@ -1680,6 +1737,18 @@ CDC 复审触发条件（任一满足即进入 ADR 复审）：
 ```
 
 Action 白名单与后端接口映射（与 API 9.7 同步维护）：
+
+**家属侧核心操作（支撑自然语言完成寻人发布与轨迹查询）：**
+
+| action | 目标接口（方法+路径） | 执行等级 | 执行约束 |
+| :--- | :--- | :--- | :--- |
+| create_rescue_task | POST /api/v1/rescue/tasks（3.2.1） | A2 (`CONFIRM_1`) | 家属确认后执行 |
+| query_task_snapshot | GET /api/v1/rescue/tasks/{task_id}/snapshot（3.7.1） | A0 | 只读，允许自动执行 |
+| query_trajectory | GET /api/v1/rescue/tasks/{task_id}/trajectory/latest（3.7.2） | A0 | 只读，允许自动执行 |
+| query_patient_profile | GET /api/v1/patients/{patient_id}（3.5） | A0 | 只读，允许自动执行 |
+| query_clue_list | GET /api/v1/rescue/tasks/{task_id}/clues（3.7） | A0 | 只读，允许自动执行 |
+
+**管理与治理操作：**
 
 | action | 目标接口（方法+路径） | 最低确认 | 执行约束 |
 | :--- | :--- | :--- | :--- |

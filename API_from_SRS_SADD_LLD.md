@@ -161,10 +161,11 @@ Cursor 模式：
 4. 数据库存储与空间计算统一使用 `WGS84`，围栏判定、去重聚合、轨迹计算均以标准化结果为准。
 5. 所有读接口返回的 `coord_system` 固定为 `WGS84`。
 
-### 1.10 AI 模型接入约定（百炼/千问兼容）
+### 1.10 AI 模型接入约定（Spring AI Alibaba / 百炼 / 千问）
 
-1. AI 供应商实现可替换，当前推荐接入阿里云百炼（Qwen 系列）；接口契约保持供应商无关。
-2. 写接口不要求客户端上传模型供应商信息；服务端按治理配置与模型白名单选择 `model_name`。
+1. 后端采用 `spring-ai-alibaba-starter` 集成阿里云百炼（DashScope）通义千问大模型，通过 `ChatClient` + `FunctionCallback`（`@Tool`）实现 AI Agent 的 Tool-Use 编排。
+2. AI Agent 可通过 Function Calling 调用标准域 API 完成家属侧核心操作（如发布任务、查询轨迹），所有写操作须经 Policy Guard 门禁。
+3. 写接口不要求客户端上传模型供应商信息；服务端按治理配置与模型白名单选择 `model_name`。
 3. `token_usage` 至少返回 `prompt_tokens`、`completion_tokens`、`total_tokens`，可扩展 `model_name`、`billing_source`、`provider_request_id`。
 4. 模型异常场景必须保持现有错误码语义：`E_AI_4292`、`E_AI_4293` 等不得因供应商替换而改变。
 5. 降级场景建议返回 `fallback_response.mode`，取值 `RULE_BASED`/`SAFE_GUARD`/`TOOL_DEGRADED`。
@@ -9871,6 +9872,18 @@ Agent 策略配置键（`sys_config.scope=ai_policy`）：
 4. 任意阶段出现连续策略阻断或执行失败率异常，按能力包一键降级到 A1 只建议模式。
 
 ### 9.7 Function Calling Action 白名单与接口映射
+
+**家属侧核心操作（支撑自然语言完成寻人发布与轨迹查询）：**
+
+| action | 目标接口（方法+路径） | 执行等级 | 执行约束 |
+| :--- | :--- | :--- | :--- |
+| create_rescue_task | POST /api/v1/rescue/tasks（3.1.1） | A2 (`CONFIRM_1`) | 家属确认后执行 |
+| query_task_snapshot | GET /api/v1/rescue/tasks/{task_id}/snapshot（3.1.3） | A0 | 只读，允许自动执行 |
+| query_trajectory | GET /api/v1/rescue/tasks/{task_id}/trajectory/latest（3.1.4） | A0 | 只读，允许自动执行 |
+| query_patient_profile | GET /api/v1/patients/{patient_id}（3.3） | A0 | 只读，允许自动执行 |
+| query_clue_list | GET /api/v1/rescue/tasks/{task_id}/clues（3.1） | A0 | 只读，允许自动执行 |
+
+**管理与治理操作：**
 
 | action | 目标接口（方法+路径） | 最低确认 | 执行约束 |
 | :--- | :--- | :--- | :--- |

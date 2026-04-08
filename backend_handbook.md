@@ -37,7 +37,7 @@
 
 | 编号 | 约束 | 执行要求 |
 | :--- | :--- | :--- |
-| HC-01 | TASK 域是任务状态机唯一权威，AI 仅发布建议 | 禁止 AI 服务直接改 rescue_task.status |
+| HC-01 | TASK 域是任务状态机唯一权威，AI 通过 Function Calling 调用标准域 API | 禁止 AI 服务直接写 `rescue_task` 等域实体表；状态变更由 TASK 服务完成 |
 | HC-02 | 核心状态变更必须本地事务 + Outbox 同提交 | 任何核心状态事件不得绕过 Outbox |
 | HC-03 | 所有写接口必须支持 request_id 幂等 | 无幂等键写接口禁止上线 |
 | HC-04 | 全链路必须透传 trace_id | 无 trace_id 的请求在网关拒绝 |
@@ -196,9 +196,23 @@ service-x/
 
 ### 3.3 AI 相关 SDK（必须）
 
-1. 统一 AI Adapter 层，不得在业务层直接调用供应商 SDK。
-2. 支持主模型与降级模型切换。
-3. token_usage 必须统一输出键：
+1. AI Agent 框架采用 `spring-ai-alibaba-starter`，对接阿里云百炼（DashScope）通义千问大模型。
+2. 核心依赖：
+
+```xml
+<dependency>
+    <groupId>com.alibaba.cloud.ai</groupId>
+    <artifactId>spring-ai-alibaba-starter</artifactId>
+</dependency>
+```
+
+3. `ai-orchestrator-service` 通过 `ChatClient` + `@Tool` 注解实现 Tool-Use Agent 编排：
+   - `ChatClient.builder(chatModel).defaultSystem(systemPrompt).defaultTools(taskTool, clueTool, patientTool).build()`
+   - 每个 `@Tool` 方法映射唯一域 API（如 `createRescueTask` → `POST /api/v1/rescue/tasks`）。
+   - Tool 方法通过 Feign 调用目标域 REST API，携带 `X-Action-Source=AI_AGENT`。
+4. 统一 AI Adapter 层，不得在业务层直接调用供应商 SDK。
+5. 支持主模型与降级模型切换（`sys_config` 键 `ai.model.chat.primary` / `ai.model.chat.fallback`）。
+6. token_usage 必须统一输出键：
    - prompt_tokens
    - completion_tokens
    - total_tokens

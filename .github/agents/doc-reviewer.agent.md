@@ -29,6 +29,7 @@ model: ['Claude Opus 4.6 (copilot)', 'Claude Sonnet 4.6 (copilot)']
 | HC-04 | 链路可追踪 — `trace_id` 全透传 |
 | HC-05 | WebSocket 定向下发 — 禁止全量广播 |
 | HC-06 | 禁用短信 — 仅站内通知 |
+| HC-07 | 必须实现家属端 LUI 与系统交互 |
 
 ## 评审维度
 

@@ -423,7 +423,7 @@ Outbox phase：PENDING/DISPATCHING/SENT/RETRY/DEAD。
 
 实现约束：
 
-1. entry_token 必须设置为 HttpOnly + Secure + SameSite=Strict，Max-Age <= 120。
+1. entry_token 必须设置为 HttpOnly + Secure + SameSite=Strict，Max-Age = 300。
 2. APP/MINI_PROGRAM 调用 /r/{resource_token} 时，必须在响应头回写 X-Anonymous-Token，值与 entry_token 完全一致。
 3. 当 Cookie(entry_token) 与 X-Anonymous-Token 同时存在但值不一致，必须拒绝 E_CLUE_4012。
 

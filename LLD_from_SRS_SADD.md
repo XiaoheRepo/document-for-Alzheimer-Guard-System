@@ -289,7 +289,7 @@ WS -> C : 推送任务已创建
 
 | 字段 | 类型 | 必填 | 约束 |
 | :--- | :--- | :---: | :--- |
-| manual_entry_token | string | 是 | 一次性令牌，TTL <= 120s，用于后续匿名入口访问授权 |
+| manual_entry_token | string | 是 | 一次性令牌，TTL = 300s，用于后续匿名入口访问授权 |
 
 #### 3.3.3 POST /api/v1/clues/report
 

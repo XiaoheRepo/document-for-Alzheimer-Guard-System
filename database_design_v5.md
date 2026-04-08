@@ -43,6 +43,7 @@
 5. HC-05：WebSocket 集群精准下发，禁止广播；数据库存储仅承载持久化通知与审计证据。
 6. HC-06：通知通道不依赖外部短信，数据库不设计 SMS 专用通道字段。
 7. 空间坐标统一标准：数据库内所有空间坐标一律使用 `WGS84(EPSG:4326)`；上游 `GCJ-02/BD-09` 必须在网关标准化后入库。
+8. HC-07：家属端必须实现 LUI 自然语言交互；`ai_session` 表 `messages` JSONB 字段需记录所有 Tool Call 的 `action_source`、`action_id`、`result_code`，满足 LUI 操作审计追溯。
 
 ## 3. 表清单与分类
 

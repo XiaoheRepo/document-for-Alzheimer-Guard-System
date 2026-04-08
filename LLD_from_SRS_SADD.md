@@ -44,6 +44,7 @@
 | HC-04 | 全链路必须透传 trace_id。 |
 | HC-05 | WebSocket 集群必须路由查询后定向下发，禁止全量广播。 |
 | HC-06 | 通知仅使用应用推送和站内通知，不依赖短信。 |
+| HC-07 | 家属端必须实现 LUI（自然语言交互界面），通过 AI Agent + Function Calling 完成核心操作；所有 LUI 写操作必须经 Policy Guard 校验并审计。 |
 
 ### 1.4 术语
 
@@ -1779,14 +1780,85 @@ Action 白名单与后端接口映射（与 API 9.7 同步维护）：
 
 ### 11.2 resource_token 与 entry_token
 
-resource_token 要求：
-- Base64URL 编码。
-- 必须验签与解密成功。
-- 不直接暴露内部主键。
+#### 11.2.1 resource_token 规范
 
-entry_token 载荷建议：
-- jti、tag_code、short_code、issued_at、expire_at、nonce。
-- 单次消费后作废。
+resource_token 是印制在物理标签二维码中的加密载荷，扫码后由后端解析。
+
+生成规则：
+1. resource_token = Base64URL( AES-256-GCM_Encrypt( payload_json, batch_key ) )
+2. 加密密钥按批次管理（`kid` 标识），支持按批次撤销与快速失效。
+3. 生成时机：物资工单发货分配标签时，与 `tag_asset UNBOUND→ALLOCATED` 同事务提交。
+
+载荷结构（加密前）：
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| kid | string | 批次密钥 ID，支持密钥轮换与批次撤销 |
+| tag_code | string | 标签编码 |
+| short_code | string | 患者 6 位短码 |
+| tag_type | string | 物资类型：`QR_CODE` / `NFC` |
+| applicant_user_id | string | 物资申领人 ID（string 传输） |
+| iat | int64 | 签发时间（Unix 秒） |
+| ver | int | 载荷版本号（当前 `1`） |
+
+二维码 URL 格式（可点击链接）：
+- `https://<h5-domain>/r/{resource_token}`
+- URL 必须为完整 HTTPS 链接，可直接在浏览器打开。
+
+安全约束：
+- resource_token 长度限制 32-1024 字符，仅允许 Base64URL 字符集。
+- 不直接暴露内部主键（`patient_id` 不在载荷中，通过 `short_code` 间接关联）。
+- 标签作废、密钥泄露时必须重新生成 resource_token 并重建 resource_link。
+
+#### 11.2.2 entry_token 规范
+
+entry_token 是路人扫码/手动录入验证通过后，后端颁发的一次性匿名凭据。
+
+颁发时机：
+1. 扫码路径：`GET /r/{resource_token}` 验签成功后，随 302 重定向通过 `Set-Cookie` 下发。
+2. 手动路径：`POST /api/v1/public/clues/manual-entry` 校验成功后，在响应体返回 `manual_entry_token`，同时通过 `Set-Cookie` 下发。
+
+载荷结构（JWT 或等效签名令牌）：
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| jti | string | 唯一标识（UUID），用于一次性消费去重 |
+| tag_code | string | 标签编码 |
+| short_code | string | 患者短码（后续线索上报以此确认患者） |
+| client_ip | string | 颁发时的客户端 IP |
+| device_fingerprint | string | 颁发时的设备指纹（来自 `User-Agent` 哈希或请求体 `device_fingerprint`） |
+| source_type | string | 来源类型：`SCAN`（扫码）/ `MANUAL`（手动录入） |
+| iat | int64 | 签发时间（Unix 秒） |
+| exp | int64 | 过期时间（`iat + 300`，即 5 分钟有效） |
+| nonce | string | 随机数，防重放 |
+
+Cookie 属性：`HttpOnly; Secure; SameSite=Strict; Max-Age=300`
+
+一次性消费机制：
+1. 路人提交线索（`POST /api/v1/clues/report`）时，后端提取 entry_token 并校验。
+2. 校验通过后，将 `jti` 写入 Redis（`SETNX entry_token:consumed:{jti} 1 EX 600`）。
+3. 若 `SETNX` 返回 0（已存在），说明 entry_token 已被消费，返回 `E_CLUE_4012`。
+4. 消费成功后该 entry_token 不可再用于提交线索。
+5. 注意：entry_token 在 5 分钟窗口内可用于加载页面（GET 请求），但只能用于 **一次** 线索提交（POST）。
+
+IP/设备绑定校验：
+1. 提交线索时，后端比对 entry_token 中的 `client_ip` 与当前请求 IP。
+2. 若 IP 不一致，返回 `E_CLUE_4013`（凭据绑定校验失败）。
+3. 设备指纹校验：若请求携带 `device_fingerprint` 且与 entry_token 载荷不一致，同样拒绝。
+4. 此机制防止"一人扫码后将凭据转发给他人上传错误定位"的攻击。
+
+审计要求：
+- entry_token 的 `jti` 必须写入线索记录的审计字段（`clue_record.entry_token_jti`）。
+- 所有 entry_token 颁发与消费事件必须记录对应的 `trace_id`、`client_ip`。
+
+防重放与安全：
+- entry_token 的 `nonce` + `jti` 双重防重放。
+- 过期时间 5 分钟（300 秒）；Redis 消费记录保留 10 分钟（600 秒）后自动淘汰。
+- Cookie 仅 Secure + HttpOnly，JavaScript 不可读取。
+
+非浏览器端（APP）：
+- 使用 `X-Anonymous-Token` Header 传递 entry_token，语义等价。
+- 若同时携带 `Cookie(entry_token)` 与 `X-Anonymous-Token` 且值不一致，拒绝 `E_CLUE_4012`。
 
 ### 11.3 审计覆盖
 

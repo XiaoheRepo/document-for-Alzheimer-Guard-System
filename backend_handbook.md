@@ -43,6 +43,7 @@
 | HC-04 | 全链路必须透传 trace_id | 无 trace_id 的请求在网关拒绝 |
 | HC-05 | WebSocket 必须路由后定向下发 | 禁止全量广播 |
 | HC-06 | 通知不依赖短信 | 通知仅站内与应用推送 |
+| HC-07 | 家属端必须实现 LUI 自然语言交互 | AI Agent 写操作经 Policy Guard 校验，`action_source=AI_AGENT` 全链路审计 |
 
 ### 0.4 SRS 五段追踪矩阵（需求 -> 接口 -> 事件 -> 表 -> 测试）（必须）
 

@@ -79,18 +79,18 @@
 | gateway-security | 接入安全层 | 无 | 认证透传、幂等预拦截、时间窗校验 | - | - |
 | auth-service | 接入安全层 | 无 | JWT 校验、resource_token 验签解码 | - | - |
 | risk-service | 接入安全层 | 风控计数 | CAPTCHA、IP/设备限流、冷却策略 | - | - |
-| profile-service | 患者档案与标识域 | patient_profile、sys_user_patient、tag_asset | 档案、监护关系、标签状态管理 | profile.updated、profile.corrected、profile.deleted.logical、tag.bound | task.created、task.resolved、task.false_alarm |
-| task-service | 寻回任务域 | rescue_task | 任务创建/关闭、状态收敛、通知触发 | task.created、task.resolved、task.false_alarm、task.state.changed | clue.validated、track.updated、fence.breached、ai.strategy.generated、ai.poster.generated |
-| clue-intake-service | 线索域（入口） | clue_record（原始段） | 匿名线索入口、标准化与入站削峰 | clue.reported.raw、clue.vectorize.requested | - |
-| clue-analysis-service | 线索域（研判） | clue_record | 时空研判、围栏判定、可疑线索识别 | clue.validated、clue.suspected、track.updated、fence.breached | clue.reported.raw、task.state.changed、clue.rejected |
-| clue-trajectory-service | 线索域（轨迹） | patient_trajectory | 轨迹聚合、窗口归档、终态 Flush | track.updated（聚合后） | clue.validated、task.resolved、task.false_alarm |
-| ai-orchestrator-service | AI 域 | ai_session、配额账本 | 上下文组装、推理、策略事件 | ai.strategy.generated、ai.poster.generated、memory.appended、memory.expired | clue.validated、track.updated、task.resolved |
-| ai-vectorizer-service | AI 域 | vector_store | 文本切片、向量写入、失效清理 | - | profile.updated、profile.corrected、profile.deleted.logical、memory.appended、memory.expired、clue.vectorize.requested |
-| material-service | 物资域 | tag_apply_record | 工单流转、发货、异常处置 | material.order.created | tag.bound |
-| notify-service | 通知域 | 本地幂等日志 | 事件消费、模板组装、通知分发 | - | task.created、task.resolved、task.false_alarm、fence.breached、track.updated |
-| ws-gateway-service | 通知域 | Redis 路由态 | WebSocket 长连接、路由注册、点对点下发 | - | Kafka 业务事件、定向通道 ws.push.{pod_id} |
-| admin-review-service | 治理域 | clue_record 审核字段 | clue.override / reject、治理审计 | clue.rejected、clue.validated(override=true) | clue.suspected |
-| outbox-dispatcher | 平台组件 | sys_outbox_log | 分区抢占、租约、重试、死信闸门 | Kafka 对应 Topic | - |
+| profile-service | 患者档案与监护域 | patient_profile、sys_user_patient | 档案、监护关系管理 | profile.updated、profile.corrected、profile.deleted.logical | task.created、task.resolved、task.false_alarm |
+| task-service | 寻回任务执行域 | rescue_task | 任务创建/关闭、状态收敛、通知触发 | task.created、task.resolved、task.false_alarm、task.state.changed | clue.validated、track.updated、fence.breached、ai.strategy.generated、ai.poster.generated |
+| clue-intake-service | 线索与时空研判域（入口） | clue_record（原始段） | 匿名线索入口、标准化与入站削峰 | clue.reported.raw、clue.vectorize.requested | - |
+| clue-analysis-service | 线索与时空研判域（研判） | clue_record | 时空研判、围栏判定、可疑线索识别 | clue.validated、clue.suspected、track.updated、fence.breached | clue.reported.raw、task.state.changed、clue.rejected |
+| clue-trajectory-service | 线索与时空研判域（轨迹） | patient_trajectory | 轨迹聚合、窗口归档、终态 Flush | track.updated（聚合后） | clue.validated、task.resolved、task.false_alarm |
+| ai-orchestrator-service | AI 协同支持域 | ai_session、配额账本 | 上下文组装、推理、策略事件 | ai.strategy.generated、ai.poster.generated、memory.appended、memory.expired | clue.validated、track.updated、task.resolved |
+| ai-vectorizer-service | AI 协同支持域 | vector_store | 文本切片、向量写入、失效清理 | - | profile.updated、profile.corrected、profile.deleted.logical、memory.appended、memory.expired、clue.vectorize.requested |
+| material-service | 标签与物资运营域 | tag_asset、tag_apply_record | 标签主数据、绑定流程、工单流转、发货、异常处置 | tag.bound、material.order.created | task.resolved、task.false_alarm |
+| notify-service | 通用治理域（通知子能力） | 本地幂等日志 | 事件消费、模板组装、通知分发 | - | task.created、task.resolved、task.false_alarm、fence.breached、track.updated |
+| ws-gateway-service | 通用治理域（通知子能力） | Redis 路由态 | WebSocket 长连接、路由注册、点对点下发 | - | Kafka 业务事件、定向通道 ws.push.{pod_id} |
+| admin-review-service | 通用治理域（审计子能力） | clue_record 审核字段 | clue.override / reject、治理审计 | clue.rejected、clue.validated(override=true) | clue.suspected |
+| outbox-dispatcher | 通用治理域（Outbox 治理） | sys_outbox_log | 分区抢占、租约、重试、死信闸门 | Kafka 对应 Topic | - |
 
 ### 2.2 部署拓扑（PlantUML）
 
@@ -309,7 +309,7 @@ WS -> C : 推送任务已创建
 1. 网关已完成坐标系校验与坐标转换（GCJ-02/BD-09 -> WGS84）。
 2. 网关从 Cookie(entry_token) 或 X-Anonymous-Token 提取并校验匿名凭据，不接受 Body 传递 token。
 3. 校验匿名凭据一次性与绑定关系。
-4. 写 clue_record(raw) 并同事务写 Outbox 事件 clue.reported.raw、clue.vectorize.requested。
+4. 写 clue_record(raw) 并直接发布 Kafka 事件 `clue.reported.raw`、`clue.vectorize.requested`（不走 Outbox，与 SADD §5.2 保持一致）。
 5. 由研判服务与向量化 Worker 异步处理，不在入口同步执行重计算或 Embedding 网络调用。
 6. clue-analysis-service 消费 clue.reported.raw 时必须写入 risk_score 与 suspect_reason（若不可疑可置空 suspect_reason）。
 
@@ -854,6 +854,7 @@ medical_history JSONB 键契约（对齐 API 3.3.8 / 3.3.9）：
 | patient_id | bigint | not null | 患者 |
 | status | varchar(20) | not null | ACTIVE/RESOLVED/FALSE_ALARM |
 | source | varchar(32) | not null | 来源 |
+| remark | varchar(500) | null | 发起备注 |
 | ai_analysis_summary | text | null | AI 分析摘要（异步回写） |
 | poster_url | varchar(1024) | null | AI 海报地址（ai.poster.generated 回写） |
 | close_reason | varchar(256) | null | 关闭原因 |

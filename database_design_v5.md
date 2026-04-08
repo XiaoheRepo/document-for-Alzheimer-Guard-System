@@ -74,7 +74,7 @@
 说明：
 
 - 相比早期 11+1 基线，本版新增/显式化了 sys_config、consumed_event_log、notification_inbox、guardian_invitation、patient_memory_note。
-- notification_inbox 为 API 3.9 消息中心接口所需持久化能力，不新增业务域，仅补齐治理域通知能力落库。
+- notification_inbox 为 API 3.9 消息中心接口所需持久化能力，不新增业务域，仅补齐通用治理域通知子能力落库。
 - guardian_invitation 承接 3.3 监护邀请生命周期（PENDING/ACCEPTED/REJECTED/EXPIRED/REVOKED），sys_user_patient 保持已生效关系快照。
 - patient_memory_note 承接 3.5.5/3.5.6 记忆原始条目；向量化结果落 vector_store。
 - 3.1.15 任务告警分页直接复用 notification_inbox（按 type/level/related_task_id 过滤）。

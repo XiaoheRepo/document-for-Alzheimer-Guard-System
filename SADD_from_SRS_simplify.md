@@ -134,12 +134,12 @@ SYS --> PUSH
 
 | 领域 | 定位 | 核心职责 |
 | :--- | :--- | :--- |
-| AI 协同决策域 | 核心域 | 策略计算、建议生成、会话能力（不直接改状态） |
+| 寻回任务执行域 | 核心域 | 任务生命周期、状态收敛与寻回闭环（HC-01 唯一权威） |
 | 线索与时空研判域 | 核心子域 | 线索接入、研判、围栏判定、轨迹处理 |
-| 患者档案与标识域 | 支撑域 | 患者档案、关系与标签主数据 |
-| 寻回任务执行域 | 支撑域 | 任务生命周期与状态收敛 |
-| 物资运营域 | 支撑域 | 工单、发货、异常与闭环 |
-| 身份权限与治理域 | 通用域 | 权限、审计、治理策略 |
+| 患者档案与监护域 | 支撑域 | 患者档案、监护关系管理 |
+| 标签与物资运营域 | 支撑域 | 标签主数据、绑定流程、工单与物流闭环 |
+| AI 协同支持域 | 支撑域 | 策略计算、建议生成、会话能力（不直接改状态） |
+| 通用治理域 | 通用域 | 身份、权限、审计、配置、Outbox 治理、通知 |
 
 ### 4.2 域间协作（PlantUML）
 
@@ -148,7 +148,7 @@ SYS --> PUSH
 left to right direction
 
 package 核心域 {
-  [AI协同决策域] as AI
+  [寻回任务执行域] as TASK
 }
 
 package 核心子域 {
@@ -156,13 +156,13 @@ package 核心子域 {
 }
 
 package 支撑域 {
-  [患者档案与标识域] as PROFILE
-  [寻回任务执行域] as TASK
-  [物资运营域] as MAT
+  [患者档案与监护域] as PROFILE
+  [标签与物资运营域] as MAT
+  [AI 协同支持域] as AI
 }
 
 package 通用域 {
-  [身份权限与治理域] as GOV
+  [通用治理域] as GOV
 }
 
 PROFILE --> TASK
@@ -171,8 +171,8 @@ CLUE --> TASK
 TASK ..> CLUE : task.state.changed
 TASK --> AI : 只读上下文
 AI ..> TASK : ai.strategy.generated
-PROFILE ..> MAT : tag.bound
-MAT --> PROFILE
+MAT --> PROFILE : 绑定时查询授权
+TASK --> MAT : task.resolved（标签状态同步）
 
 AI --> GOV
 CLUE --> GOV
@@ -183,9 +183,13 @@ PROFILE --> GOV
 ```
 
 ### 4.3 领域权威约束
-- TASK 域是状态唯一权威。
+- TASK 域是任务状态唯一权威（HC-01）。
 - AI 域仅产出建议事件，不直接改写业务状态。
-- 跨域协作优先事件，不允许跨域直接写库。
+- `tag_asset` 写模型归属标签与物资运营域（MAT），档案域通过事件协作。
+- 跨域协作优先事件驱动，不允许跨域直接写库。
+- TASK↔CLUE 双向事件接口已冻结（`task.state.changed`、`clue.validated`、`fence.breached`、`track.updated`），变更需架构评审。
+- 接入安全层（gateway-security / auth-service / risk-service）为基础设施，不计入业务领域。
+- 通知能力为通用治理域子能力，不构成独立领域。
 
 ### 4.4 线索域高并发拆分边界
 
@@ -250,8 +254,15 @@ TRAJ -> PG : 轨迹归档
 | `ai.strategy.generated` | AI服务 | 任务服务 | 策略建议 |
 | `ai.poster.generated` | AI服务 | 任务服务 | 海报异步回写 |
 | `profile.created` | 档案服务 | AI向量化服务 | 新建档案后触发向量化初始化 |
-| `tag.bound` | 档案服务 | 物资服务 | 标签绑定后驱动工单自动收敛 |
+| `tag.bound` | 物资服务 | 档案服务 | 标签绑定完成后通知档案域同步状态 |
 | `material.order.created` | 物资服务 | 管理端处理器 | 物资工单创建 |
+| `clue.rejected` | 管理复核服务 | 线索服务、任务服务 | 管理员驳回可疑线索 |
+| `profile.updated` | 档案服务 | AI 向量化服务 | 档案更新后触发向量重建 |
+| `profile.corrected` | 档案服务 | AI 向量化服务 | 档案勘误后触发向量重建 |
+| `profile.deleted.logical` | 档案服务 | AI 向量化服务 | 逻辑删除后清理向量 |
+| `clue.vectorize.requested` | 线索入口服务 | AI 向量化服务 | 线索文本向量化请求 |
+| `memory.appended` | AI 服务 | AI 向量化服务 | 记忆条目新增 |
+| `memory.expired` | AI 服务 | AI 向量化服务 | 记忆条目过期清理 |
 
 ### 5.3 Outbox 强一致投递模型
 

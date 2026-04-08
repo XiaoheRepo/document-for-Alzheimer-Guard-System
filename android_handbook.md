@@ -520,7 +520,7 @@ fun handleEvent(localVersion: Long, event: TaskEvent): ConsumeAction {
 | GUA-01 | 监护管理页 | GET /guardians, /invitations, /transfers, DELETE /guardians/{user_id} | 成员列表 Tab + 邀请记录 Tab + 转移记录 Tab | 支持发起邀请、移除成员、查看转移状态；高风险操作二次确认 |
 | TAG-01 | 标签管理页 | GET /patients/{patient_id}/tags, /tags/{tag_code}, /history, POST /tags/bind, /lost | 标签状态卡 + 历史时间线 + 操作按钮区 | BIND/LOST 按状态控制可见操作；状态变化后刷新详情与历史 |
 
-### 14.7 物资运营域页面（4 页）
+### 14.7 标签与物资运营域页面（4 页）
 
 | 页面 ID | 页面名称 | 关键接口 | 布局规范 | 交互规范 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -892,7 +892,7 @@ class CoilAppImage : AppImage {
 | `tag_code`、`patient_id` | 是 | 标签编码非空；患者 ID 合法 | `E_MAT_4044`、`E_PRO_4041`、`E_REQ_4005` | 无标签时展示“去申领/绑定”空态 |
 | 操作参数：`resource_token`、`lost_reason`、`void_reason` | 条件必填 | `LOST/VOID` 动作需原因；资源令牌格式合法 | `E_MAT_4002`、`E_MAT_4004`、`E_MAT_4005`、`E_MAT_4098`、`E_MAT_4223`、`E_PRO_4092`、`E_PRO_4093`、`E_PRO_4031` | 状态冲突时刷新标签详情并锁定非法动作 |
 
-#### 14.15.4 物资运营域（4 页）
+#### 14.15.4 标签与物资运营域（4 页）
 
 #### ORD-01 工单列表页
 

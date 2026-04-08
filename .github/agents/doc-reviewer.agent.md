@@ -1,6 +1,7 @@
 ---
 description: "评审文档集的跨文档一致性、架构合理性、数据库可执行性、API契约完整性和实现手册可落地性。Use when: review documents, audit architecture, check consistency, validate API, database review, 文档评审, 一致性检查, 架构审查"
 tools: [read, search, edit, todo, agent]
+model: ['Claude Opus 4.6 (copilot)', 'Claude Sonnet 4.6 (copilot)']
 ---
 
 # 📋 文档评审 Agent — Doc Reviewer

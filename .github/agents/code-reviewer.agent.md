@@ -1,6 +1,7 @@
 ---
 description: "审查代码实现是否符合文档契约（SRS/SADD/LLD/API/DB Design）。Use when: code review, check implementation, verify contract, 代码审查, 实现校验, 契约检查"
 tools: [read, search, todo]
+model: ['Claude Opus 4.6 (copilot)', 'Claude Sonnet 4.6 (copilot)']
 ---
 
 # 🔍 代码审查 Agent — Code Reviewer

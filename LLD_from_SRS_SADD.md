@@ -86,7 +86,7 @@
 | clue-trajectory-service | 线索与时空研判域（轨迹） | patient_trajectory | 轨迹聚合、窗口归档、终态 Flush | track.updated（聚合后） | clue.validated、task.resolved、task.false_alarm |
 | ai-orchestrator-service | AI 协同支持域 | ai_session、配额账本 | 上下文组装、推理、策略事件 | ai.strategy.generated、ai.poster.generated、memory.appended、memory.expired | clue.validated、track.updated、task.resolved |
 | ai-vectorizer-service | AI 协同支持域 | vector_store | 文本切片、向量写入、失效清理 | - | profile.updated、profile.corrected、profile.deleted.logical、memory.appended、memory.expired、clue.vectorize.requested |
-| material-service | 标签与物资运营域 | tag_asset、tag_apply_record | 标签主数据、绑定流程、工单流转、发货、异常处置 | tag.bound、material.order.created | task.resolved、task.false_alarm |
+| material-service | 标签与物资运营域 | tag_asset、tag_apply_record | 标签主数据、绑定流程、工单流转、发货、异常处置 | tag.bound、material.order.created | - |
 | notify-service | 通用治理域（通知子能力） | 本地幂等日志 | 事件消费、模板组装、通知分发 | - | task.created、task.resolved、task.false_alarm、fence.breached、track.updated |
 | ws-gateway-service | 通用治理域（通知子能力） | Redis 路由态 | WebSocket 长连接、路由注册、点对点下发 | - | Kafka 业务事件、定向通道 ws.push.{pod_id} |
 | admin-review-service | 通用治理域（审计子能力） | clue_record 审核字段 | clue.override / reject、治理审计 | clue.rejected、clue.validated(override=true) | clue.suspected |
@@ -420,7 +420,7 @@ WHERE session_id = :session_id
    b. 创建或激活 sys_user_patient 行：user_id=invitee_user_id，patient_id=patient_id，relation_role=GUARDIAN，relation_status=ACTIVE。
    c. 若目标 sys_user_patient 行已存在且 relation_status=REVOKED，更新为 ACTIVE 并重置 transfer_state=NONE。
    d. 若目标行已存在且 relation_status=ACTIVE，幂等返回成功（不重复创建）。
-   e. 同事务写 Outbox 事件：guardian.invitation.accepted。
+   e. 同事务写审计日志（module=GUARDIAN，action=INVITATION_ACCEPTED）。
 2. action=REJECT 时，guardian_invitation.status → REJECTED，写入 rejected_at 与 reject_reason；不创建或修改 sys_user_patient。
 
 错误码：E_PRO_4041、E_PRO_4043、E_PRO_4096、E_PRO_4008、E_REQ_4001。
@@ -668,7 +668,7 @@ WHERE session_id = :session_id
 | memory.appended | patient_id | ai-orchestrator-service | ai-vectorizer-service |
 | memory.expired | patient_id | ai-orchestrator-service | ai-vectorizer-service |
 | material.order.created | order_id | material-service | admin handlers |
-| tag.bound | patient_id | profile-service | material-service、notify-service |
+| tag.bound | patient_id | material-service | profile-service、notify-service |
 
 ### 4.2 统一事件 Envelope
 
@@ -1169,8 +1169,9 @@ HNSW 索引参数：
 目标：将高耗时 Embedding 调用从核心写接口剥离，保障入口吞吐与可用性。
 
 流程约束：
-1. 任意线索写入成功后，必须同事务写 Outbox 事件 `clue.vectorize.requested`（载荷至少包含 patient_id、clue_id、source_version、trace_id、request_id）。
-2. `ai-vectorizer-service` 仅通过消费事件执行向量化，禁止在 `POST /api/v1/clues/report` 同步调用三方 Embedding API。
+1. 线索写入成功后异步发布 Kafka 事件 `clue.vectorize.requested`（载荷至少包含 patient_id、clue_id、source_version、trace_id、request_id），不走 Outbox（与 `clue.reported.raw` 保持一致，与 SADD §5.2 对齐）。
+2. 允许丢失：向量化为辅助链路，丢失不影响主线索研判。可由定时补偿任务扫描 `clue_record` 中未向量化的记录进行兆底重发。
+3. `ai-vectorizer-service` 仅通过消费事件执行向量化，禁止在 `POST /api/v1/clues/report` 同步调用三方 Embedding API。
 3. Worker 拉取原文后完成切片、调用 Embedding 模型、写入或更新 `vector_store`（按 source_id + source_version + chunk_hash 幂等 upsert）。
 4. Embedding 失败走重试退避；超过阈值进入 DEAD 并告警，禁止阻塞线索主写链路。
 5. 向量化完成前，RAG 召回允许读取旧版本或降级策略，但不得回滚主交易务。

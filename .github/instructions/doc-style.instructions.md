@@ -32,9 +32,9 @@ applyTo: "**/*.md"
 | 域 | 状态值 |
 |----|--------|
 | 走失状态 | `NORMAL`, `MISSING` |
-| 任务状态 | `PENDING`, `ACTIVE`, `CLOSING`, `CLOSED` |
-| 线索状态 | `PENDING`, `CONFIRMED`, `REJECTED`, `SUSPECT` |
-| 标签状态 | `UNBOUND`, `ASSIGNED`, `BINDABLE`, `BOUND`, `LOST`, `REVOKED` |
+| 任务状态 | `ACTIVE`, `RESOLVED`, `FALSE_ALARM` |
+| 线索有效性 | `is_valid`（boolean）+ `suspect_flag`（boolean）+ `review_status`（`PENDING`, `OVERRIDDEN`, `REJECTED`） |
+| 标签状态 | `UNBOUND`, `ALLOCATED`, `BOUND`, `LOST`, `VOID` |
 
 ## 硬约束提醒
 

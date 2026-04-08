@@ -172,7 +172,7 @@ TASK ..> CLUE : task.state.changed
 TASK --> AI : 只读上下文
 AI ..> TASK : ai.strategy.generated
 MAT --> PROFILE : 绑定时查询授权
-TASK --> MAT : task.resolved（标签状态同步）
+MAT ..> PROFILE : tag.bound
 
 AI --> GOV
 CLUE --> GOV

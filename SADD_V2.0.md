@@ -41,7 +41,7 @@
 | HC-05 | 动态配置化 | 严禁硬编码。围栏半径、防漂移速度阈值、AI Token 限制、疑似走失超时阈值、信息展示时间等参数必须通过配置中心动态下发 | FR-GOV-008 |
 | HC-06 | 匿名风险隔离 | 匿名入口必须执行"设备指纹 + 频率 + 地理位置"校验，非置信上报进入审计队列 | BR-001, FR-GOV-001 |
 | HC-07 | 隐私脱敏规范 | 平台端与非属主视图在展示 PII（姓名、坐标）时，必须由架构基座执行强制脱敏；路人端照片资源必须叠加半透明时间戳水印 | FR-GOV-005, BR-010 |
-| HC-08 | 通信约束 | 仅支持站内通知、应用推送（极光推送）及 WebSocket 定向下发，系统在通知网关层预留短信服务接口 | 项目约束（成本与合规考量）, §7.2 |
+| HC-08 | 通信约束 | 支持应用推送（极光推送）、邮件推送（SMTP）、站内通知及 WebSocket 定向下发。通知网关层预留短信服务接口扩展能力，当前阶段不启用。禁止全量广播 | FR-GOV-010, 项目约束 |
 
 ---
 
@@ -83,48 +83,38 @@
 | 管理角色 | 超级管理员 | 高危治理、系统级应急处置、参数配置 | §2 |
 | 外部系统 | 大模型服务 | 推理与生成（通义千问等） | FR-AI-001 |
 | 外部系统 | 地图定位服务 | 坐标解析与地理计算 | FR-CLUE-001 |
-| 外部系统 | 消息推送服务 | 应用推送触达 | §3.2 |
+| 外部系统 | 极光推送服务（JPush） | App 后台实时通知推送 | FR-GOV-010 |
+| 外部系统 | 邮件服务（SMTP） | 账号验证、密码重置、重要业务通知 | FR-GOV-002, FR-GOV-010 |
 
 ### 3.2 上下文总览
 
-```plantuml
-@startuml
-left to right direction
+```mermaid
+graph LR
+    Family["家属/监护人"] --> ACCESS
+    Passerby["路人发现者"] --> ACCESS
+    Admin["普通管理员"] --> ACCESS
+    SuperAdmin["超级管理员"] --> ACCESS
 
-actor "家属/监护人" as Family
-actor "路人发现者" as Passerby
-actor "普通管理员" as Admin
-actor "超级管理员" as SuperAdmin
+    subgraph ACCESS["接入安全层"]
+        GW[Security Gateway]
+        AUTH[Auth Service]
+        RISK[Risk Service]
+    end
 
-rectangle "接入安全层" as ACCESS {
-  [Security Gateway]
-  [Auth Service]
-  [Risk Service]
-}
+    subgraph SYS["协同寻回系统"]
+        TASK["寻回任务执行域"]
+        CLUE["线索与时空研判域"]
+        PROFILE["患者档案与监护域"]
+        MAT["标签与物资运营域"]
+        AI["AI 协同支持域"]
+        GOV["通用治理域"]
+    end
 
-rectangle "协同寻回系统" as SYS {
-  [寻回任务执行域] as TASK
-  [线索与时空研判域] as CLUE
-  [患者档案与监护域] as PROFILE
-  [标签与物资运营域] as MAT
-  [AI 协同支持域] as AI
-  [通用治理域] as GOV
-}
-
-cloud "大模型服务" as LLM
-cloud "地图定位服务" as MAP
-cloud "消息推送服务" as PUSH
-
-Family --> ACCESS
-Passerby --> ACCESS
-Admin --> ACCESS
-SuperAdmin --> ACCESS
-
-ACCESS --> SYS
-SYS --> LLM
-SYS --> MAP
-SYS --> PUSH
-@enduml
+    ACCESS --> SYS
+    SYS --> LLM(["大模型服务"])
+    SYS --> MAP(["地图定位服务"])
+    SYS --> JPUSH(["极光推送服务"])
+    SYS --> SMTP(["邮件服务 SMTP"])
 ```
 
 ### 3.3 分层架构
@@ -150,6 +140,9 @@ SYS --> PUSH
 | 通知背板 | Redis Pub/Sub | WebSocket 集群间消息定向转发 | 轻量级，满足单集群场景 |
 | 发号能力 | 全局序列服务 + 缓存消费层 | 保证短码序列唯一、单调、不回退 | FR-PRO-003, FR-PRO-004, BR-009 |
 | 对象存储 | 本地 / OSS | 照片、海报等静态资源存储 | AC-09 时效控制 |
+| 应用推送 | 极光推送（JPush SDK） | App 后台实时通知推送（Android） | FR-GOV-010，HC-08 |
+| 邮件服务 | SMTP（企业邮箱或云邮件服务） | 账号有效性校验、密码重置、重要业务通知 | FR-GOV-002, FR-GOV-010 |
+| 通知网关 | 通知服务（应用层统一编排） | 多渠道路由（推送/邮件/站内/WebSocket）、降级策略、短信接口预留 | FR-GOV-010, HC-08 |
 
 ### 3.5 接入安全能力拆分
 
@@ -172,52 +165,77 @@ SYS --> PUSH
 | 患者档案与监护域（PROFILE） | 支撑域 | 患者档案 CRUD、走失状态（`NORMAL` / `MISSING_PENDING` / `MISSING`）管理、监护关系协同、围栏配置 | §4.3, §5.2.1, §5.2.6 |
 | 标签与物资运营域（MAT） | 支撑域 | 标签主数据、绑定流程、物资申领工单闭环、批量发号与库存管理 | §4.5, §5.2.3, §5.2.5 |
 | AI 协同支持域（AI） | 支撑域 | AI Agent 自然语言交互、Function Calling 编排、策略建议、海报文案生成、RAG 向量化管理（集成 Spring AI Alibaba） | §4.1, §5.3 |
-| 通用治理域（GOV） | 通用域 | 身份、权限、审计、配置四维治理；Outbox 投递管理；通知能力 | §4.6 |
+| 通用治理域（GOV） | 通用域 | 身份、权限、审计、配置四维治理；Outbox 投递管理；通知网关（多渠道路由、降级策略、审计记录） | §4.6 |
 
 ### 4.2 域间协作
 
-```plantuml
-@startuml
-left to right direction
+```mermaid
+graph LR
+    subgraph 核心域
+        TASK[寻回任务执行域]
+    end
 
-package "核心域" {
-  [寻回任务执行域] as TASK
-}
+    subgraph 核心子域
+        CLUE[线索与时空研判域]
+    end
 
-package "核心子域" {
-  [线索与时空研判域] as CLUE
-}
+    subgraph 支撑域
+        PROFILE[患者档案与监护域]
+        MAT[标签与物资运营域]
+        AI[AI 协同支持域]
+    end
 
-package "支撑域" {
-  [患者档案与监护域] as PROFILE
-  [标签与物资运营域] as MAT
-  [AI 协同支持域] as AI
-}
+    subgraph 通用域
+        GOV[通用治理域<br/>含审计/配置/通知]
+    end
 
-package "通用域" {
-  [通用治理域] as GOV
-}
+    EXT([外部用户/设备])
 
-CLUE --> TASK : clue.validated / track.updated
-CLUE ..> PROFILE : 查询患者状态
-CLUE ..> MAT : tag.suspected_lost
+    %% ================= TASK 域出向 =================
+    TASK -- "task.created / task.closed.*" --> PROFILE
+    TASK -. "task.state.changed" .-> CLUE
+    TASK -. "只读上下文" .-> AI
+    TASK -- "task.created / task.closed.* / task.sustained" --> GOV
 
-TASK --> PROFILE : task.created / task.closed.*
-TASK ..> CLUE : task.state.changed (围栏抑制)
-TASK --> AI : 只读上下文
-TASK ..> GOV : 通知触发
+    %% ================= CLUE 域出向 =================
+    CLUE -- "clue.validated / track.updated" --> TASK
+    CLUE -. "查询患者状态" .-> PROFILE
+    CLUE -- "clue.scan.normal_patient" --> PROFILE
+    CLUE -- "tag.suspected_lost" --> MAT
+    CLUE -- "fence.breached / clue.validated" --> GOV
+    CLUE -- "clue.suspected" --> GOV
+    CLUE -- "clue.vectorize.requested" --> AI
 
-AI ..> TASK : «Function Calling»\ncreate_rescue_task / propose_close
-AI ..> CLUE : «Function Calling»\nquery_trajectory
-AI ..> PROFILE : «Function Calling»\nquery_patient_profile
-AI --> GOV : 审计 + 配额
+    %% ================= PROFILE 域出向 =================
+    PROFILE -- "patient.missing_pending" --> TASK
+    PROFILE -- "patient.missing_pending / patient.confirmed_safe" --> GOV
+    PROFILE -- "profile.created / profile.updated / profile.deleted.logical" --> AI
+    PROFILE -- "profile.deleted.logical" --> MAT
+    PROFILE -- "审计" --> GOV
 
-PROFILE ..> AI : profile.created / profile.updated (向量化)
-PROFILE --> GOV : 审计
+    %% ================= MAT 域出向 =================
+    MAT -- "tag.bound" --> PROFILE
+    MAT -- "审计" --> GOV
 
-MAT --> PROFILE : tag.bound (绑定通知)
-MAT --> GOV : 审计
-@enduml
+    %% ================= AI 域出向 =================
+    AI -. "调用业务接口 (经门禁校验)" .-> TASK
+    AI -- "ai.strategy.generated / ai.poster.generated" --> TASK
+    AI -. "获取时空轨迹上下文" .-> CLUE
+    AI -. "调用业务接口 (查/改)" .-> PROFILE
+    AI -- "审计 + 配额" --> GOV
+
+    %% ================= GOV 域出向 =================
+    GOV -- "clue.overridden / clue.rejected" --> CLUE
+    GOV -. "极光推送/邮件/WebSocket/站内" .-> EXT
+
+    %% ================= 样式定义 =================
+    classDef core fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef support fill:#f3e5f5,stroke:#4a148c,stroke-width:1px;
+    classDef generic fill:#fff3e0,stroke:#e65100,stroke-width:1px;
+    
+    class TASK,CLUE core;
+    class PROFILE,MAT,AI support;
+    class GOV generic;
 ```
 
 ### 4.3 领域权威约束
@@ -227,8 +245,8 @@ MAT --> GOV : 审计
 3. **AI Agent** 通过 Function Calling 调用各域标准 REST API 执行业务操作，所有写操作经 Policy Guard 门禁校验后由目标域服务自身完成状态变更；AI 服务不直接写入域实体表。
 4. `tag_asset` 写模型归属 MAT 域，PROFILE 域通过事件协作。
 5. 跨域协作优先事件驱动，不允许跨域直接写库。
-6. 冻结事件接口清单：`task.state.changed`、`clue.validated`、`fence.breached`、`track.updated`、`task.created`、`task.closed.found`、`task.closed.false_alarm`、`patient.missing_pending`、`patient.confirmed_safe`、`tag.bound`、`tag.suspected_lost`。变更需架构评审。
-7. 接入安全层为基础设施，不计入业务领域。通知能力为通用治理域子能力，不构成独立领域。
+6. 冻结事件接口清单：`task.state.changed`、`clue.validated`、`fence.breached`、`track.updated`、`task.created`、`task.closed.found`、`task.closed.false_alarm`、`patient.missing_pending`、`patient.confirmed_safe`、`tag.bound`、`tag.suspected_lost`、`notification.sent`。变更需架构评审。
+7. 接入安全层为基础设施，不计入业务领域。通知服务为通用治理域子能力，负责多渠道路由（极光推送、邮件、站内通知、WebSocket）与降级策略，不构成独立领域。
 
 ### 4.4 核心业务状态机
 
@@ -236,22 +254,27 @@ MAT --> GOV : 审计
 
 #### 4.4.1 患者走失状态机（SRS §5.2.1）
 
-```plantuml
-@startuml
-[*] --> NORMAL
+```mermaid
+stateDiagram-v2
+    [*] --> NORMAL
 
-NORMAL --> MISSING_PENDING : 路人扫描防走失标签
-NORMAL --> MISSING : 家属主动发起寻回任务
+    NORMAL --> MISSING_PENDING : 路人扫描防走失标签
+    NORMAL --> MISSING : 家属主动发起寻回任务
 
-MISSING_PENDING --> MISSING : 家属确认走失 /\n超时自动升级
-MISSING_PENDING --> NORMAL : 家属确认未走失
+    MISSING_PENDING --> MISSING : 家属确认走失 / 超时自动升级
+    MISSING_PENDING --> NORMAL : 家属确认未走失
 
-MISSING --> NORMAL : 寻回任务彻底关闭
+    MISSING --> NORMAL : 寻回任务彻底关闭
 
-NORMAL : 正常/未走失
-MISSING_PENDING : 疑似走失\n(等待家属确认)
-MISSING : 走失中
-@enduml
+    state NORMAL {
+        [*] : 正常/未走失
+    }
+    state MISSING_PENDING {
+        [*] : 疑似走失（等待家属确认）
+    }
+    state MISSING {
+        [*] : 走失中
+    }
 ```
 
 | 当前状态 | 目标状态 | 触发条件 | 架构动作 |
@@ -268,27 +291,36 @@ MISSING : 走失中
 
 #### 4.4.2 寻回任务状态机（SRS §5.2.2）
 
-```plantuml
-@startuml
-[*] --> CREATED
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED
 
-CREATED --> ACTIVE : 家属确认走失 / 超时自动创建 /\n家属主动发起
+    CREATED --> ACTIVE : 家属确认走失 / 超时自动创建 / 家属主动发起
 
-ACTIVE --> SUSTAINED : 超过阈值且无新线索
-ACTIVE --> CLOSED_FOUND : 发起者或主监护人确认寻回
-ACTIVE --> CLOSED_FALSE_ALARM : 标记误报并填写原因
+    ACTIVE --> SUSTAINED : 超过阈值且无新线索
+    ACTIVE --> CLOSED_FOUND : 发起者或主监护人确认寻回
+    ACTIVE --> CLOSED_FALSE_ALARM : 标记误报并填写原因
 
-SUSTAINED --> CLOSED_FOUND : 发起者或主监护人确认寻回
+    SUSTAINED --> CLOSED_FOUND : 发起者或主监护人确认寻回
 
-CLOSED_FOUND --> [*]
-CLOSED_FALSE_ALARM --> [*]
+    CLOSED_FOUND --> [*]
+    CLOSED_FALSE_ALARM --> [*]
 
-CREATED : 创建态(短暂)
-ACTIVE : 进行中/活跃
-SUSTAINED : 长期维持\n(静默轨迹更新,\n每日AI摘要)
-CLOSED_FOUND : 已关闭-确认寻回\n(触发经验沉淀)
-CLOSED_FALSE_ALARM : 已关闭-误报\n(阻断数据沉淀)
-@enduml
+    state CREATED {
+        [*] : 创建态（短暂）
+    }
+    state ACTIVE {
+        [*] : 进行中/活跃
+    }
+    state SUSTAINED {
+        [*] : 长期维持（静默轨迹更新，每日 AI 摘要）
+    }
+    state CLOSED_FOUND {
+        [*] : 已关闭-确认寻回（触发经验沉淀）
+    }
+    state CLOSED_FALSE_ALARM {
+        [*] : 已关闭-误报（阻断数据沉淀）
+    }
 ```
 
 | 当前状态 | 目标状态 | 触发条件 | 架构动作 |
@@ -296,34 +328,45 @@ CLOSED_FALSE_ALARM : 已关闭-误报\n(阻断数据沉淀)
 | `CREATED` | `ACTIVE` | 家属确认走失 / 超时自动 / 家属主动发起 | 同一用例内原子迁移，发布 `task.created`；同一患者仅允许一个非终态任务（FR-TASK-001，DB 唯一约束 + 幂等拦截） |
 | `ACTIVE` | `SUSTAINED` | 超过阈值（如 24h）且无新线索 | 调度器检测 → TASK 域迁移 → 发布 `task.sustained`；停止主动推送，AI 降为每日摘要模式 |
 | `ACTIVE` / `SUSTAINED` | `CLOSED_FOUND` | 发起者或主监护人确认寻回 | 权限校验（FR-TASK-005）→ 迁移 → 发布 `task.closed.found` → 异步沉淀轨迹至向量库 |
-| `ACTIVE` | `CLOSED_FALSE_ALARM` | 标记误报并填写原因 | 强制填写关闭原因（FR-TASK-004）→ 发布 `task.closed.false_alarm` → **阻断**数据进入 RAG 样本库（BR-003） |
+| `ACTIVE` | `CLOSED_FALSE_ALARM` | 标记误报并填写原因 | 强制填写关闭原因（FR-TASK-004）→ 发布 `task.closed.false_alarm` → 阻断数据进入 RAG 样本库（BR-003） |
 
 #### 4.4.3 防走失标签状态机（SRS §5.2.3）
 
-```plantuml
-@startuml
-[*] --> UNBOUND
+```mermaid
+stateDiagram-v2
+    [*] --> UNBOUND
 
-UNBOUND --> ALLOCATED : 发货出库\n记录短码+工单映射
-ALLOCATED --> BOUND : 家属在线完成绑定
+    UNBOUND --> ALLOCATED : 发货出库（记录短码+工单映射）
+    ALLOCATED --> BOUND : 家属在线完成绑定
 
-BOUND --> SUSPECTED_LOST : 路人上报仅发现标识
-SUSPECTED_LOST --> LOST : 主监护人确认丢失
-SUSPECTED_LOST --> BOUND : 主监护人确认未丢失
+    BOUND --> SUSPECTED_LOST : 路人上报仅发现标识
+    SUSPECTED_LOST --> LOST : 主监护人确认丢失
+    SUSPECTED_LOST --> BOUND : 主监护人确认未丢失
 
-UNBOUND --> VOIDED : 档案注销 / 异常作废
-ALLOCATED --> VOIDED : 档案注销 / 异常作废
-BOUND --> VOIDED : 档案注销 / 异常作废
-SUSPECTED_LOST --> VOIDED : 档案注销 / 异常作废
-LOST --> VOIDED : 档案注销 / 异常作废
+    UNBOUND --> VOIDED : 档案注销 / 异常作废
+    ALLOCATED --> VOIDED : 档案注销 / 异常作废
+    BOUND --> VOIDED : 档案注销 / 异常作废
+    SUSPECTED_LOST --> VOIDED : 档案注销 / 异常作废
+    LOST --> VOIDED : 档案注销 / 异常作废
 
-UNBOUND : 未绑定(初始)
-ALLOCATED : 已分配
-BOUND : 已绑定
-SUSPECTED_LOST : 疑似丢失
-LOST : 挂失/丢失
-VOIDED : 作废(终态)
-@enduml
+    state UNBOUND {
+        [*] : 未绑定（初始）
+    }
+    state ALLOCATED {
+        [*] : 已分配
+    }
+    state BOUND {
+        [*] : 已绑定
+    }
+    state SUSPECTED_LOST {
+        [*] : 疑似丢失
+    }
+    state LOST {
+        [*] : 挂失/丢失
+    }
+    state VOIDED {
+        [*] : 作废（终态）
+    }
 ```
 
 | 当前状态 | 目标状态 | 触发条件 | 架构动作 |
@@ -374,24 +417,14 @@ VOIDED : 作废(终态)
 
 ### 4.5 线索域高并发拆分边界
 
-```plantuml
-@startuml
-left to right direction
-
-actor "路人发现者" as P
-component "Clue Intake\n(入口服务)" as INTAKE
-queue "Redis Streams\nclue.reported.raw" as RS
-component "Spatial Analysis\n(研判服务)" as SA
-component "Trajectory\n(轨迹服务)" as TRAJ
-database "PostgreSQL\n+ PostGIS" as PG
-
-P -> INTAKE : 匿名上报
-INTAKE -> RS : clue.reported.raw
-RS -> SA : Consumer Group 消费
-SA -> RS : clue.validated / clue.suspected
-SA -> PG : 线索状态落库
-TRAJ -> PG : 轨迹归档
-@enduml
+```mermaid
+graph LR
+    P["路人发现者"] --> INTAKE["Clue Intake<br/>（入口服务）"]
+    INTAKE --> RS["Redis Streams<br/>clue.reported.raw"]
+    RS --> SA["Spatial Analysis<br/>（研判服务）"]
+    SA --> RS2["Redis Streams<br/>clue.validated / clue.suspected"]
+    SA --> PG[("PostgreSQL<br/>+ PostGIS")]
+    TRAJ["Trajectory<br/>（轨迹服务）"] --> PG
 ```
 
 - **Intake** 仅做入参校验与削峰写入 Redis Streams，不做研判逻辑。
@@ -426,6 +459,71 @@ TRAJ -> PG : 轨迹归档
 补充：
 - 幂等键空间与命名规范由 LLD 定义。
 - 围栏判定链路必须依赖状态事件下发后的缓存态，详见 §4.6。
+
+### 5.1a 错误码架构规范
+
+> 保证跨域错误语义一致性，统一前后端错误处理契约。
+
+**编码规则**：`E_{DOMAIN}_{HTTP_STATUS}{SEQ}`
+
+| 段 | 说明 | 示例 |
+| :--- | :--- | :--- |
+| `E_` | 固定前缀 | — |
+| `{DOMAIN}` | 域前缀（见下表） | `TASK`、`CLUE` |
+| `{HTTP_STATUS}` | 对应 HTTP 状态码（3 位） | `400`、`403`、`409` |
+| `{SEQ}` | 域内顺序号（1~2 位） | `1`、`97` |
+
+**域前缀分配**：
+
+| 域前缀 | 领域 | 编码区间示例 |
+| :--- | :--- | :--- |
+| `TASK` | 寻回任务执行域 | `E_TASK_4001` ~ `E_TASK_5099` |
+| `CLUE` | 线索与时空研判域 | `E_CLUE_4001` ~ `E_CLUE_5099` |
+| `PROFILE` | 患者档案与监护域 | `E_PROFILE_4001` ~ `E_PROFILE_5099` |
+| `MAT` | 标签与物资运营域 | `E_MAT_4001` ~ `E_MAT_5099` |
+| `AI` | AI 协同支持域 | `E_AI_4001` ~ `E_AI_5099` |
+| `GOV` | 通用治理域 | `E_GOV_4001` ~ `E_GOV_5099` |
+| `SYS` | 系统级（跨域通用） | `E_SYS_4001` ~ `E_SYS_5099` |
+
+**HTTP 状态码映射基线**：
+
+| HTTP 状态码 | 语义 | 典型场景 |
+| :--- | :--- | :--- |
+| `400` | 请求参数非法 | 字段缺失、格式错误、枚举越界 |
+| `401` | 身份未认证 | Token 缺失或过期 |
+| `403` | 权限不足 | RBAC 拒绝、行级越权（IDOR）、Policy Guard 拦截 |
+| `404` | 资源不存在 | 业务对象未找到（匿名入口不暴露内部主键，统一返回 `404`） |
+| `409` | 业务冲突 | 幂等重复、状态机非法迁移、并发竞争失败 |
+| `422` | 业务规则校验失败 | 围栏未开启、配额耗尽、短码非法 |
+| `429` | 频率限流 | 匿名上报限流、AI 配额超限 |
+| `500` | 系统内部错误 | 未预期异常、基础设施故障 |
+| `503` | 服务降级 | AI 模型不可用、外部依赖超时 |
+
+**已定义错误码速查**（Policy Guard）：
+
+| 错误码 | HTTP | 语义 | 来源 |
+| :--- | :--- | :--- | :--- |
+| `E_GOV_4039` | `403` | 策略拒绝 | §6.6 Policy Guard |
+| `E_GOV_4097` | `409` | 确认等级不足 | §6.6 Policy Guard |
+| `E_GOV_4226` | `422` | 预检查失败 | §6.6 Policy Guard |
+| `E_GOV_4231` | `403` | 人工专属操作被 Agent 调用 | §6.6 Policy Guard |
+
+**统一响应体结构**：
+
+```json
+{
+  "code": "E_TASK_4091",
+  "message": "任务进行中，请勿重复发起",
+  "trace_id": "abc-123-xyz",
+  "timestamp": "2026-04-17T10:30:00Z",
+  "detail": {}
+}
+```
+
+**约束**：
+1. 匿名入口（路人 H5）错误响应不暴露内部主键和域前缀详情，统一包装为通用提示。
+2. 错误码注册表由 LLD 维护完整清单，本文仅定义编码规则与域前缀分配。
+3. 新增业务错误码必须在对应域前缀区间内分配，禁止跨域复用。
 
 ### 5.2 核心事件清单
 
@@ -485,9 +583,15 @@ TRAJ -> PG : 轨迹归档
 | `memory.appended` | AI 域 | AI 向量化服务 | 记忆条目新增 | 否 |
 | `memory.expired` | AI 域 | AI 向量化服务 | 记忆条目过期清理 | 否 |
 
+#### 5.2.6 GOV 域事件
+
+| 事件 | 生产方 | 消费方 | 语义 | Outbox |
+| :--- | :--- | :--- | :--- | :--- |
+| `notification.sent` | 通知服务 | 审计服务 | 通知发送完成（含渠道、目标、结果、`trace_id`），用于审计追踪 | 否（直入 Redis Streams） |
+
 ### 5.3 Outbox 强一致投递模型
 
-1. 状态变更与 Outbox 记录在**同一本地事务**中提交（HC-02）。
+1. 状态变更与 Outbox 记录在同一本地事务中提交（HC-02）。
 2. 事务提交后，Outbox Poller 异步扫描并发布至 Redis Streams。
 3. 投递失败进入重试队列，超过重试上限进入 DEAD 状态。
 4. 消费端必须幂等并防乱序。
@@ -499,6 +603,7 @@ TRAJ -> PG : 轨迹归档
 - Intake 原始事件（`clue.reported.raw`）先入 Redis Streams，再异步落库。
 
 **生命周期要求**：
+
 - Outbox 必须具备自动归档/清理机制（错峰限速，避免反压主库）。
 - DEAD 事件必须具备受控人工干预入口（诊断、修复、重放），且修复前分区闸门持续生效。
 - 干预动作必须全量审计并可追溯（`operator_user_id`、`reason`、`trace_id`、`before_phase`、`after_phase`）。
@@ -508,34 +613,33 @@ TRAJ -> PG : 轨迹归档
 - 采用 Choreography，不引入中心编排器单点（ADR-001）。
 - 主链以 TASK 状态收敛为准。
 - 子链路失败走补偿，不回滚主状态。
-- 典型 Saga 链路：`task.created` → PROFILE 域迁移 `lost_status` → AI 域初始化上下文 → 通知服务推送。任一子链路失败由各自域补偿，TASK 状态不回退。
+- 典型 Saga 链路：`task.created` → PROFILE 域迁移 `lost_status` → AI 域初始化上下文 → 通知服务执行强提醒双通道策略（极光推送 + WebSocket 定向下发同时触达，WebSocket 离线时降级至应用推送 + 站内通知）。任一子链路失败由各自域补偿，TASK 状态不回退。
 
 ### 5.5 WebSocket 集群精准路由（防惊群）
 
-```plantuml
-@startuml
-actor "家属用户A" as U
-node "WS 节点 1" as WS1
-node "WS 节点 2" as WS2
-database "Redis 路由表" as R
-queue "Redis Streams\n业务事件" as EB
-queue "Redis Pub/Sub\n定向通道" as PTP
+```mermaid
+sequenceDiagram
+    participant U as 家属用户A
+    participant WS1 as WS 节点 1
+    participant WS2 as WS 节点 2
+    participant R as Redis 路由表
+    participant EB as Redis Streams（业务事件）
+    participant PTP as Redis Pub/Sub（定向通道）
 
-U --> WS1 : 长连接建立
-WS1 -> R : user_id -> pod_id
+    U->>WS1: 长连接建立
+    WS1->>R: user_id → pod_id
 
-EB -> WS2 : 消费事件
-WS2 -> R : 查询目标连接节点
-WS2 -> PTP : 定向投递(ws.push.{pod_id})
-PTP -> WS1 : 点对点下发
-WS1 --> U : 消息送达
-@enduml
+    EB->>WS2: 消费事件
+    WS2->>R: 查询目标连接节点
+    WS2->>PTP: 定向投递(ws.push.{pod_id})
+    PTP->>WS1: 点对点下发
+    WS1->>U: 消息送达
 ```
 
 **约束**（HC-08）：
 - 禁止全节点 Global Topic 无差别广播。
 - 必须先路由查询再定向下发。
-- 路由缺失时降级到应用推送 / 站内通知。
+- 路由缺失时降级到应用推送（极光推送）/ 站内通知。
 - 路由心跳续期必须采用抖动窗口与阈值续期，禁止全连接同频写路由存储。
 - 路由存储短暂不可用时，必须触发可观测降级并启用推送 / 站内通知兜底。
 
@@ -706,6 +810,7 @@ WS1 --> U : 消息送达
 | AI 会话与记忆 | 会话上下文、输入输出摘要、配额消耗（双账本）、处理结果、反馈（采纳/无用） | §6.1, FR-AI-014 |
 | 审计日志 | `operator_user_id`、`operator_username`、`object_id`、`action`、`result`、`risk_level`、`detail`、`trace_id`、`request_id`、`action_source`、`agent_profile`、`ip`、变更前后快照 | §6.1, FR-GOV-006 |
 | 系统配置 | `scope`、`config_key`、`config_value`、生效状态 | FR-GOV-008 |
+| 通知记录 | 目标用户、渠道（推送/邮件/站内/WebSocket）、发送状态、关联事件、`trace_id` | FR-GOV-006, FR-GOV-010 |
 
 ### 7.2 时空与向量能力
 
@@ -765,7 +870,7 @@ WS1 --> U : 消息送达
 
 | 架构能力 | 说明 | SRS 依据 |
 | :--- | :--- | :--- |
-| 注册用户凭证管理 | 注册、登录、密码重置、账号注销与数据逻辑擦除 | FR-GOV-001, FR-GOV-002 |
+| 注册用户凭证管理 | 注册、登录、通过注册邮箱进行账号有效性校验与密码重置、账号注销与数据逻辑擦除 | FR-GOV-001, FR-GOV-002 |
 | 匿名设备指纹标识 | 采集设备软硬件特征（OS、分辨率、User-Agent）生成全局唯一 Hash 标识串，作为免登录身份凭证 | FR-GOV-001 |
 | 差异化会话管理 | 注册用户基于 JWT Token；匿名路人基于设备指纹 + 短时 Session | FR-GOV-001 |
 
@@ -782,7 +887,7 @@ WS1 --> U : 消息送达
 
 | 架构能力 | 说明 | SRS 依据 |
 | :--- | :--- | :--- |
-| 不可篡改日志链 | 所有状态变更日志追加写入，覆盖身份、档案、任务、线索、物资、AI 全链路 | FR-GOV-006 |
+| 不可篡改日志链 | 所有状态变更与关键操作日志追加写入，覆盖身份、档案、任务、线索、物资、AI、**通知发送**全链路 | FR-GOV-006 |
 | 日志字段基线 | `operator_user_id`、`operator_username`、`object_id`、`action`、`result`、`risk_level`、`detail`、`trace_id`、`request_id`、`action_source`（`USER` / `AI_AGENT`）、`agent_profile`、`ip`、变更前后快照 | FR-GOV-006, AC-14 |
 | 防篡改存储 | 至少 180 天留存，支持结构化导出供审计员查询 | FR-GOV-007 |
 | 完整性 | 覆盖率 100%，可检索、可回放、可归档 | BR-011 |
@@ -872,6 +977,7 @@ WS1 --> U : 消息送达
 | AC-12 | 弱网 SSE 首字节 ≤ 3.5s | §6.1 SSE 流式输出 + §9.1 SLO |
 | AC-13 | AI 配额耗尽后走失豁免恢复 | §6.3 走失豁免机制（Redis 标记 + 事件驱动） |
 | AC-14 | 后台可导出结构化操作日志（含操作人、动作、前后快照） | §8.2.3 审计日志字段基线 + FR-GOV-007 导出能力 |
+| AC-15 | 邮箱验证与密码重置流程端到端可用 | §8.2.1 身份（邮箱校验） + §3.4 邮件服务基础设施 |
 
 ---
 
@@ -917,6 +1023,10 @@ WS1 --> U : 消息送达
 18. 是否实现路人端照片时间戳水印叠加。
 19. 是否实现治理四维架构（身份/权限/审计/配置中心）。
 20. 是否完成多节点路由、幂等风暴、Outbox 收敛联合演练。
+21. 是否实现通知网关多渠道路由（极光推送 / 邮件 / 站内通知 / WebSocket）与降级策略。
+22. 是否验证邮箱验证码发送与密码重置流程的端到端可用性。
+23. 是否实现通知发送全链路审计（`notification.sent` 事件 → 审计服务）。
+24. 是否禁止了全量广播，确保 WebSocket 推送先路由再定向下发（HC-08）。
 
 ---
 
@@ -924,71 +1034,4 @@ WS1 --> U : 消息送达
 
 本架构以 SRS V2.0 为唯一基线，形成"主线清晰、边界明确、状态机完备、事件一致性可证明、治理四维落地"的统一工程基线。核心变更包括：三态患者走失模型、五态任务生命周期、Redis Streams 替代 Kafka 降低运维复杂度、走失配额豁免机制、路人端信息时效与水印架构。可直接用于研发、测试、运维与答辩协同。
 
----
-
-## 14. Architecture Decision Records（ADR）
-
-### 14.1 ADR 索引
-
-| ADR 编号 | 决策主题 | 状态 |
-| :--- | :--- | :--- |
-| ADR-001 | 为什么选择 Choreography Saga | Accepted |
-| ADR-002 | 为什么 AI 不拥有状态权威 | Accepted |
-| ADR-003 | 为什么使用 pgvector 而非外部向量数据库 | Accepted |
-| ADR-004 | 为什么采用 Outbox 而非 CDC-only | Accepted |
-| ADR-005 | 为什么 A4 操作必须 MANUAL_ONLY | Accepted |
-| ADR-006 | 为什么使用 Redis Streams 而非 Kafka | Accepted |
-
-### 14.2 ADR-001 为什么选择 Choreography Saga
-
-| 维度 | 内容 |
-| :--- | :--- |
-| 背景 | 多域协作链路长，中心编排器易形成单点瓶颈。 |
-| 决策 | 采用 Choreography，以事件协作实现最终一致。 |
-| 影响 | 提升解耦与扩展性，补偿治理复杂度上升。 |
-| 回看条件 | 当补偿分支复杂度持续上升时评估局部编排器。 |
-
-### 14.3 ADR-002 为什么 AI 不拥有状态权威
-
-| 维度 | 内容 |
-| :--- | :--- |
-| 背景 | AI 输出非确定性，不适合承担状态机写入权。 |
-| 决策 | TASK 域保持状态权威，AI Agent 通过 Function Calling 调用标准域 API 触发业务操作，写入由目标域服务校验并执行。 |
-| 影响 | 状态一致性更强；AI 具备 Agent 能力（自然语言发布任务、查询轨迹），同时不破坏域权威。 |
-| 回看条件 | 模型可验证能力显著提升后再评估授权边界。 |
-
-### 14.4 ADR-003 为什么使用 pgvector 而非外部向量数据库
-
-| 维度 | 内容 |
-| :--- | :--- |
-| 背景 | 检索与业务隔离、有效性过滤、审计链路强耦合。 |
-| 决策 | 当前阶段采用 pgvector 同库检索。 |
-| 影响 | 一致性与运维成本更优，超大规模弹性相对受限。 |
-| 回看条件 | 当容量或延迟长期超 SLO 时评估混合架构。 |
-
-### 14.5 ADR-004 为什么采用 Outbox 而非 CDC-only
-
-| 维度 | 内容 |
-| :--- | :--- |
-| 背景 | 关键业务要求"状态提交与事件发布"一致性可证明。 |
-| 决策 | Outbox 作为发布基线，提交后异步投递。 |
-| 影响 | 消除幽灵事件风险，增加投递与清理治理成本。 |
-| 回看条件 | 当平台原生事务事件能力可替代时再评估。 |
-
-### 14.6 ADR-005 为什么 A4 操作必须 MANUAL_ONLY
-
-| 维度 | 内容 |
-| :--- | :--- |
-| 背景 | 超管导出、日志清理、强制闭环等操作具备不可逆或强合规属性。 |
-| 决策 | 将该类动作定义为 `A4`，仅允许人工页面触发，Agent 仅可给建议与预检。 |
-| 影响 | 降低自动化误操作与越权风险，增加人工确认成本。 |
-| 回看条件 | 当法规、审计自动化能力与二人复核机制成熟后再评估。 |
-
-### 14.7 ADR-006 为什么使用 Redis Streams 而非 Kafka
-
-| 维度 | 内容 |
-| :--- | :--- |
-| 背景 | 本系统为毕设项目，部署环境为单集群云服务器。Kafka 需要独立 Zookeeper/KRaft 集群，运维复杂度与资源开销超出项目承载。 |
-| 决策 | 采用 Redis Streams 作为事件总线，利用 Consumer Group 实现可靠消费与负载均衡，XACK 确认机制保证消息不丢失。 |
-| 影响 | 运维复杂度大幅降低（Redis 已用于缓存/路由，无额外组件）；持久化能力弱于 Kafka（依赖 RDB/AOF），大规模回放能力受限。 |
-| 回看条件 | 当事件吞吐量持续超出单 Redis 实例承载、或需要跨机房多活消息复制时，评估升级至 Kafka。 |
+## 

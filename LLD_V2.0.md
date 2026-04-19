@@ -97,7 +97,7 @@ NotificationPort（出口接口）
 | ai-orchestrator-service | AI 域 | `ai_session`、配额账本 | AI Agent 自然语言交互、Function Calling 编排（Spring AI Alibaba）、上下文组装、推理、策略事件 | `ai.strategy.generated`、`ai.poster.generated`、`memory.appended`、`memory.expired` | `clue.validated`、`track.updated`、`task.created`、`task.closed.found`、`task.closed.false_alarm`、`task.sustained` |
 | ai-vectorizer-service | AI 域 | `vector_store` | 文本切片、向量写入、失效清理 | — | `profile.created`、`profile.updated`、`profile.deleted.logical`、`memory.appended`、`memory.expired`、`clue.vectorize.requested` |
 | material-service | MAT 域 | `tag_asset`、`tag_apply_record` | 标签主数据、绑定流程、工单流转、发货、异常处置 | `tag.allocated`、`tag.bound`、`tag.loss.confirmed`、`material.order.created`、`material.order.approved` | `tag.suspected_lost`、`profile.deleted.logical` |
-| notify-service | GOV 域（通知子能力） | `notification_inbox` | 事件消费、模板组装、多渠道分发（经 `NotificationPort`） | `notification.sent` | `task.created`、`task.closed.found`、`task.closed.false_alarm`、`task.sustained`、`fence.breached`、`patient.missing_pending`、`patient.confirmed_safe` |
+| notify-service | GOV 域（通知子能力） | `notification_inbox` | 事件消费、模板组装、多渠道分发（经 `NotificationPort`） | `notification.sent` | `task.created`、`task.closed.found`、`task.closed.false_alarm`、`task.sustained`、`fence.breached`、`patient.missing_pending`、`patient.confirmed_safe`、`clue.validated`、`track.updated`、`tag.suspected_lost` |
 | ws-gateway-service | GOV 域（通知子能力） | Redis 路由态 | WebSocket 长连接、路由注册、点对点下发 | — | Redis Pub/Sub `ws.push.{pod_id}` |
 | admin-review-service | GOV 域（审计子能力） | `clue_record` 审核字段 | 线索复核（override/reject）、治理审计 | `clue.overridden`、`clue.rejected` | `clue.suspected` |
 | outbox-dispatcher | GOV 域（Outbox 治理） | `sys_outbox_log` | 分区抢占、租约、重试、死信闸门 | Redis Streams 对应 Topic | — |
@@ -523,7 +523,7 @@ FUNCTION createRescueTask(cmd: CreateTaskCommand):
     // ===== 授权校验 =====
     relation = ProfileQueryPort.getRelation(cmd.userId, cmd.patientId)  // HTTP
     IF relation == null OR relation.status != ACTIVE:
-        THROW E_TASK_4030("无患者监护授权")
+        THROW E_TASK_4032("无患者监护授权")
 
     // ===== 业务校验 =====
     existingTask = RescueTaskRepository.findActiveByPatientId(cmd.patientId)
@@ -565,7 +565,7 @@ FUNCTION createRescueTask(cmd: CreateTaskCommand):
     RETURN TaskCreatedResult(task_id, task_no, status, event_version)
 
 EXCEPTION HANDLING:
-    E_TASK_4030 -> HTTP 403, 无患者监护授权
+    E_TASK_4032 -> HTTP 403, 无患者监护授权
     E_TASK_4091 -> HTTP 409, 任务已存在
     DB UniqueConstraintViolation -> 幂等兜底，返回已存在任务
 ```
@@ -587,17 +587,17 @@ FUNCTION closeRescueTask(taskId: Long, cmd: CloseTaskCommand):
     IF cmd.closedBy != task.createdBy:
         isPrimary = ProfileQueryPort.isPrimaryGuardian(cmd.closedBy, task.patientId)
         IF NOT isPrimary:
-            THROW E_TASK_4005("无关闭权限")
+            THROW E_TASK_4031("无关闭权限")
 
     // ===== 状态机守卫（HC-01）=====
     IF task.status NOT IN (ACTIVE, SUSTAINED):
-        THROW E_TASK_4093("当前状态不可关闭")
+        THROW E_TASK_4092("当前状态不可关闭")
 
     IF cmd.closeType == "FALSE_ALARM" AND task.status == SUSTAINED:
-        THROW E_TASK_4004("长期维持任务不支持误报关闭")
+        THROW E_TASK_4093("长期维持任务不支持误报关闭")
 
     IF cmd.closeType == "FALSE_ALARM" AND (cmd.closeReason == null OR len(cmd.closeReason) < 5):
-        THROW E_TASK_4005("误报关闭必须填写原因")
+        THROW E_TASK_4221("误报关闭必须填写原因")
 
     // ===== 聚合根状态迁移 =====
     IF cmd.closeType == "FOUND":
@@ -611,7 +611,7 @@ FUNCTION closeRescueTask(taskId: Long, cmd: CloseTaskCommand):
     BEGIN TRANSACTION
         success = RescueTaskRepository.conditionalUpdate(task, expectedVersion=task.eventVersion - 1)
         IF NOT success:
-            THROW E_TASK_4093("并发冲突，请重试")
+            THROW E_TASK_4094("并发冲突，请重试")
 
         OutboxRepository.insert(event_id=UUID, topic=eventTopic,
             aggregate_id=task.id, partition_key="patient_{task.patientId}",
@@ -640,9 +640,11 @@ FUNCTION closeRescueTask(taskId: Long, cmd: CloseTaskCommand):
 
 EXCEPTION HANDLING:
     E_TASK_4041 -> HTTP 404
-    E_TASK_4005 -> HTTP 403
+    E_TASK_4031 -> HTTP 403
+    E_TASK_4092 -> HTTP 409
     E_TASK_4093 -> HTTP 409
-    E_TASK_4004 -> HTTP 422
+    E_TASK_4094 -> HTTP 409
+    E_TASK_4221 -> HTTP 422
 ```
 
 #### 3.4.3 任务长期维持迁移（调度器触发）
@@ -792,11 +794,12 @@ FUNCTION transitionToSustained():
 | :--- | :--- | :---: | :--- | :--- |
 | 任务已存在 | 同患者存在非终态任务 | 409 | `E_TASK_4091` | 返回已有任务 ID，前端跳转 |
 | 任务不存在 | task_id 无效 | 404 | `E_TASK_4041` | — |
-| 状态不可迁移 | 当前状态不允许目标操作 | 409 | `E_TASK_4093` | 返回当前状态供前端提示 |
-| 无关闭权限 | 非发起者且非主监护人 | 403 | `E_TASK_4005` | — |
-| 误报缺少原因 | `FALSE_ALARM` 未填写原因 | 422 | `E_TASK_4004` | 前端强制校验 |
-| 无监护授权 | 用户与患者无关联 | 403 | `E_TASK_4030` | — |
-| 并发冲突 | 条件更新影响行为 0 | 409 | `E_TASK_4093` | 客户端重试 |
+| 状态不可迁移 | 当前状态不允许目标操作 | 409 | `E_TASK_4092` | 返回当前状态供前端提示 |
+| 无关闭权限 | 非发起者且非主监护人 | 403 | `E_TASK_4031` | — |
+| 误报缺少原因 | `FALSE_ALARM` 未填写原因 | 422 | `E_TASK_4221` | 前端强制校验 |
+| 无监护授权 | 用户与患者无关联 | 403 | `E_TASK_4032` | — |
+| 长期任务不支持误报关闭 | SUSTAINED + FALSE_ALARM | 409 | `E_TASK_4093` | — |
+| 并发冲突 | 条件更新影响行为 0 | 409 | `E_TASK_4094` | 客户端重试 |
 
 #### 3.6.2 非受检异常（系统异常）
 
@@ -1307,6 +1310,63 @@ EXCEPTION HANDLING:
 ```
 
 消费方：MAT 域（标签 `BOUND` → `SUSPECTED_LOST`）
+
+#### 4.5.8 clue.overridden
+
+```json
+{
+  "event_type":  "clue.overridden",
+  "event_id":    "evt_01H...",
+  "trace_id":    "trc_xxx",
+  "occurred_at": "2026-04-19T10:10:00Z",
+  "payload": {
+    "clue_id":     12345,
+    "patient_id":  1001,
+    "reviewer_id": 2001,
+    "override_reason": "确认为有效线索"
+  }
+}
+```
+
+消费方：GOV 域（审计日志）
+
+#### 4.5.9 clue.rejected
+
+```json
+{
+  "event_type":  "clue.rejected",
+  "event_id":    "evt_01H...",
+  "trace_id":    "trc_xxx",
+  "occurred_at": "2026-04-19T10:10:00Z",
+  "payload": {
+    "clue_id":       12345,
+    "patient_id":    1001,
+    "reviewer_id":   2001,
+    "reject_reason": "坐标与实际不符"
+  }
+}
+```
+
+消费方：GOV 域（审计日志）
+
+#### 4.5.10 clue.vectorize.requested
+
+```json
+{
+  "event_type":  "clue.vectorize.requested",
+  "event_id":    "evt_01H...",
+  "trace_id":    "trc_xxx",
+  "occurred_at": "2026-04-19T10:06:00Z",
+  "payload": {
+    "clue_id":      12345,
+    "patient_id":   1001,
+    "text_content": "老人在朝阳公园西门附近，穿蓝色外套",
+    "source_type":  "SCAN"
+  }
+}
+```
+
+消费方：AI 域（向量化服务，触发文本 Embedding）
 
 ### 4.6 异常与补偿设计
 
@@ -3133,6 +3193,47 @@ AI 域主要**消费**其他域事件，自身发布的事件较少：
 
 消费方：ai-vectorizer-service（清理对应 Embedding）
 
+#### 7.5.3 ai.strategy.generated
+
+```json
+{
+  "event_type":  "ai.strategy.generated",
+  "event_id":    "evt_01H...",
+  "trace_id":    "trc_xxx",
+  "occurred_at": "2026-04-19T10:08:00Z",
+  "payload": {
+    "task_id":       8848,
+    "patient_id":    1001,
+    "session_id":    "sess_001",
+    "strategy_type": "SEARCH_AREA_RECOMMENDATION",
+    "summary":       "建议在朝阳公园西门至北门区域搜寻",
+    "confidence":    0.82
+  }
+}
+```
+
+消费方：TASK 域（可选，关联任务日志）、GOV 域（审计日志）
+
+#### 7.5.4 ai.poster.generated
+
+```json
+{
+  "event_type":  "ai.poster.generated",
+  "event_id":    "evt_01H...",
+  "trace_id":    "trc_xxx",
+  "occurred_at": "2026-04-19T10:09:00Z",
+  "payload": {
+    "task_id":     8848,
+    "patient_id":  1001,
+    "session_id":  "sess_001",
+    "poster_url":  "https://oss.example.com/posters/task_8848.png",
+    "template_id": "TPL_MISSING_V1"
+  }
+}
+```
+
+消费方：TASK 域（可选，附加到任务详情）、GOV 域（审计日志）
+
 ### 7.6 异常与补偿设计
 
 | 异常 | 触发条件 | HTTP | 错误码 | 补偿动作 |
@@ -3598,11 +3699,13 @@ ROUTING_RULES:
   task.created          → [WebSocket(家属), JPush(家属)]
   task.closed.found     → [WebSocket(家属), JPush(家属)]
   task.closed.false_alarm → [WebSocket(家属), JPush(家属)]
+  task.sustained        → [WebSocket(家属), JPush(家属)]
   clue.validated        → [WebSocket(家属), JPush(家属)]  // 受节流控制
   track.updated         → [WebSocket(家属)]                // 受节流控制，仅在线推送
   fence.breached        → [WebSocket(家属, level=CRITICAL), JPush(家属)]  // 受节流控制
   patient.missing_pending → [WebSocket(家属, level=CRITICAL), JPush(家属)]
   tag.suspected_lost    → [WebSocket(主监护人), JPush(主监护人)]
+  patient.confirmed_safe → [WebSocket(家属), JPush(家属)]
 
   // 节流配置（按患者粒度，防消息轰炸）
   // 配置键：notification.clue_throttle.interval_seconds（默认 300，管理员可调）
@@ -3746,6 +3849,7 @@ COMMIT TRANSACTION
 | `intent:{intent_id}` | AI 意图缓存 | 配置键 `ai.intent.expire_seconds` |
 | `notify:throttle:patient:{pid}:{event_type}` | 通知节流窗口（按患者+事件类型） | 配置键 `notification.clue_throttle.interval_seconds`，默认 300 |
 | `dedup:topic:{event_id}` | 可选一级幂等缓存 | 7d |
+| `ws.push.{pod_id}` | WebSocket 跨 Pod 定向推送 Pub/Sub 频道 | — (Pub/Sub 频道，无 TTL) |
 
 ### 10.2 L1/L2 更新规则
 

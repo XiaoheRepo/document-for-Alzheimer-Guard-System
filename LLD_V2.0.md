@@ -89,7 +89,7 @@ NotificationPort（出口接口）
 | gateway-security | 接入安全层 | 无 | 认证透传、幂等预拦截、时间窗校验 | — | — |
 | auth-service | 接入安全层 | 无 | JWT 校验、resource_token 验签解码 | — | — |
 | risk-service | 接入安全层 | 风控计数 | CAPTCHA、IP/设备限流、冷却策略 | — | — |
-| profile-service | PROFILE 域 | `patient_profile`、`sys_user_patient`、`guardian_invitation` | 档案、监护关系、走失状态迁移 | `profile.created`、`profile.updated`、`profile.deleted.logical`、`patient.missing_pending`、`patient.confirmed_safe` | `task.created`、`task.closed.found`、`task.closed.false_alarm`、`clue.scan.normal_patient`、`tag.bound` |
+| profile-service | PROFILE 域 | `patient_profile`、`guardian_relation`、`guardian_transfer_request`、`guardian_invitation` | 档案、监护关系、走失状态迁移 | `profile.created`、`profile.updated`、`profile.deleted.logical`、`patient.missing_pending`、`patient.confirmed_safe` | `task.created`、`task.closed.found`、`task.closed.false_alarm`、`clue.scan.normal_patient`、`tag.bound` |
 | task-service | TASK 域 | `rescue_task` | 任务生命周期、状态收敛、通知触发 | `task.created`、`task.state.changed`、`task.sustained`、`task.closed.found`、`task.closed.false_alarm` | `clue.validated`、`track.updated`、`fence.breached`、`ai.strategy.generated`、`ai.poster.generated`、`patient.missing_pending` |
 | clue-intake-service | CLUE 域（入口） | `clue_record`（原始段） | 匿名线索入口、标准化与入站削峰 | `clue.reported.raw`、`clue.vectorize.requested`、`clue.scan.normal_patient`、`tag.suspected_lost` | — |
 | clue-analysis-service | CLUE 域（研判） | `clue_record` | 时空研判、围栏判定、可疑线索识别 | `clue.validated`、`clue.suspected`、`track.updated`、`fence.breached` | `clue.reported.raw`、`task.state.changed` |
@@ -1015,7 +1015,6 @@ Request Body:
 ```json
 {
   "short_code":         "string, 必填, 固定6位大写字母数字",
-  "pin_code":           "string, 必填, 固定6位",
   "captcha_token":      "string, 必填, 人机校验通过令牌",
   "device_fingerprint": "string, 必填, 16-128（HC-06）"
 }
@@ -1061,7 +1060,7 @@ Request Body:
 处理流程：
 1. 网关从 Cookie / `X-Anonymous-Token` 提取 `entry_token` 并校验
 2. 一次性消费校验（Redis SETNX）
-3. IP/设备绑定校验
+3. 设备指纹校验 + IP /24 子网匹配（见 §12.2 宽松模式说明）
 4. 写 `clue_record`（raw）
 5. 直接发布 Redis Streams `clue.reported.raw` + `clue.vectorize.requested`（**不走 Outbox**，来自 SADD §5.3）
 6. 若 `tag_only=true` 且标签为 `BOUND`，发布 `tag.suspected_lost`
@@ -1419,8 +1418,6 @@ EXCEPTION HANDLING:
 | `gender` | varchar(16) | `MALE`/`FEMALE`/`UNKNOWN` | FR-PRO-001 |
 | `birthday` | date | 出生日期 | FR-PRO-001 |
 | `short_code` | char(6) | 6 位短码（服务端发号，对称混淆）**唯一** | FR-PRO-003, FR-PRO-004 |
-| `pin_code_hash` | varchar(128) | 手动兜底 PIN 哈希 | FR-CLUE-003 |
-| `pin_code_salt` | varchar(64) | PIN 盐值 | — |
 | `photo_url` | varchar(1024) | 近期正面照片 | FR-PRO-001 |
 | `medical_history` | jsonb | 医疗扩展信息（blood_type/chronic_diseases/allergy_notes） | FR-PRO-001 |
 | `appearance_tags` | jsonb | 体貌特征结构化标签 | FR-PRO-001 |
@@ -1441,7 +1438,9 @@ EXCEPTION HANDLING:
 **PostGIS 字段**：`fence_center` — SRID=4326，查询方式 `ST_DWithin`
 **事件 payload 冗余字段**：`lost_status`、`lost_status_event_time`（用于 `task.state.changed` 消费）
 
-#### 5.1.2 sys_user_patient（用户-患者关系表）
+#### 5.1.2 guardian_relation（监护关系表）
+
+业务职责：长期存在的用户-患者监护绑定关系，与转移请求解耦（单一职责拆分）。
 
 | 字段名 | 类型 | 业务含义 | 约束来源 |
 | :--- | :--- | :--- | :--- |
@@ -1450,22 +1449,37 @@ EXCEPTION HANDLING:
 | `patient_id` | bigint | 患者 | — |
 | `relation_role` | varchar(32) | `PRIMARY_GUARDIAN`/`GUARDIAN` | FR-PRO-006 |
 | `relation_status` | varchar(20) | `PENDING`/`ACTIVE`/`REVOKED` | — |
-| `transfer_state` | varchar(32) | `NONE`/`PENDING_CONFIRM`/`ACCEPTED`/`REJECTED`/`CANCELLED`/`EXPIRED` | SRS §5.2.6 |
-| `transfer_request_id` | varchar(64) | 转移请求号 | FR-PRO-007 |
-| `transfer_target_user_id` | bigint | 受方 | FR-PRO-007 |
-| `transfer_requested_by` | bigint | 发起人 | — |
-| `transfer_requested_at` | timestamptz | 发起时间 | — |
-| `transfer_reason` | varchar(256) | 发起原因 | — |
-| `transfer_expire_at` | timestamptz | 过期时间 | — |
-| `transfer_confirmed_at` | timestamptz | 确认时间 | — |
-| `transfer_rejected_at` | timestamptz | 拒绝时间 | — |
-| `transfer_reject_reason` | varchar(256) | 拒绝原因 | — |
-| `transfer_cancelled_by` | bigint | 撤销操作人 | — |
-| `transfer_cancelled_at` | timestamptz | 撤销时间 | — |
-| `transfer_cancel_reason` | varchar(256) | 撤销原因 | — |
 | `trace_id` | varchar(64) | 链路标识 **（HC-04）** | SADD HC-04 |
 | `created_at` | timestamptz | 创建时间 | — |
 | `updated_at` | timestamptz | 更新时间 | — |
+
+**唯一约束**：`uq_guardian_active(user_id, patient_id)` 部分索引 `WHERE relation_status = 'ACTIVE'`
+
+#### 5.1.2a guardian_transfer_request（监护权转移请求表）
+
+业务职责：临时性主监护权转移请求，独立生命周期，支持完整历史追溯。
+
+| 字段名 | 类型 | 业务含义 | 约束来源 |
+| :--- | :--- | :--- | :--- |
+| `id` | bigint | 主键 | — |
+| `request_id` | varchar(64) | 转移请求号（唯一） | FR-PRO-007 |
+| `patient_id` | bigint | 归属患者 | — |
+| `initiator_user_id` | bigint | 发起人（当前主监护人） | FR-PRO-007 |
+| `target_user_id` | bigint | 受方（必须是 ACTIVE 成员） | FR-PRO-007 |
+| `status` | varchar(32) | `PENDING_CONFIRM`/`ACCEPTED`/`REJECTED`/`CANCELLED`/`EXPIRED` | SRS §5.2.6 |
+| `reason` | varchar(256) | 发起原因 | — |
+| `expire_at` | timestamptz | 过期时间 | — |
+| `confirmed_at` | timestamptz | 确认时间 | — |
+| `rejected_at` | timestamptz | 拒绝时间 | — |
+| `reject_reason` | varchar(256) | 拒绝原因 | — |
+| `cancelled_by` | bigint | 撤销操作人 | — |
+| `cancelled_at` | timestamptz | 撤销时间 | — |
+| `cancel_reason` | varchar(256) | 撤销原因 | — |
+| `trace_id` | varchar(64) | 链路标识 **（HC-04）** | SADD HC-04 |
+| `created_at` | timestamptz | 创建时间 | — |
+| `updated_at` | timestamptz | 更新时间 | — |
+
+**业务约束**：同一 `patient_id` 同时仅允许一条 `PENDING_CONFIRM` 记录（部分唯一索引）。历史请求全部保留，支持审计追溯。
 
 #### 5.1.3 guardian_invitation（监护邀请表）
 
@@ -1526,14 +1540,23 @@ package "PROFILE 域" {
     - patientId: Long
     - relationRole: String
     - relationStatus: String
-    - transferState: String
     + invite(inviteeId: Long): void
     + acceptInvitation(): void
-    + initiateTransfer(targetId: Long): void
-    + confirmTransfer(): void
-    + rejectTransfer(reason: String): void
-    + cancelTransfer(reason: String): void
     + revoke(): void
+  }
+
+  class GuardianTransferRequest <<Entity>> {
+    - id: Long
+    - requestId: String
+    - patientId: Long
+    - initiatorUserId: Long
+    - targetUserId: Long
+    - status: TransferStatus
+    + create(cmd: TransferCommand): void
+    + confirm(): void
+    + reject(reason: String): void
+    + cancel(reason: String, userId: Long): void
+    + expire(): void
   }
 
   interface PatientProfileRepository {
@@ -1547,6 +1570,12 @@ package "PROFILE 域" {
     + save(rel: GuardianRelation): void
     + findActiveByUserAndPatient(userId: Long, patientId: Long): GuardianRelation
     + findPrimaryByPatient(patientId: Long): GuardianRelation
+  }
+
+  interface GuardianTransferRequestRepository {
+    + save(req: GuardianTransferRequest): void
+    + findPendingByPatient(patientId: Long): GuardianTransferRequest
+    + findById(id: Long): GuardianTransferRequest
   }
 
   class PatientMissingPendingEvent <<DomainEvent>> {
@@ -1651,6 +1680,109 @@ Request Body:
 - `CONFIRM_MISSING`：创建任务（调用 TASK 域）→ 患者 → `MISSING`
 - `CONFIRM_SAFE`：患者 → `NORMAL`，发布 `patient.confirmed_safe`
 
+#### 5.3.5 PUT /api/v1/patients/{patient_id}/fence
+
+描述：更新围栏配置（来自 SRS FR-PRO-010，SADD §6.7 白名单 `update_fence_config`）
+
+Headers:
+```
+X-Trace-Id:   string, 必填
+X-Request-Id: string, 必填
+Authorization: Bearer JWT
+```
+
+Request Body:
+```json
+{
+  "fence_enabled":  "boolean, 必填",
+  "fence_center":   "object, 开启时必填, { lng: number, lat: number }",
+  "fence_radius_m": "int32, 开启时必填, 100-50000, 配置键 profile.fence.default_radius_m"
+}
+```
+
+Response 200:
+```json
+{
+  "code": "OK",
+  "trace_id": "trc_xxx",
+  "data": {
+    "patient_id": 1001,
+    "fence_enabled": true,
+    "fence_radius_m": 500
+  }
+}
+```
+
+权限要求：当前用户必须为该患者 `PRIMARY_GUARDIAN` 或 `GUARDIAN`（ACTIVE）
+
+幂等说明：`Redis Key = "idem:req:{X-Request-Id}"，TTL = 24h`
+
+#### 5.3.6 PUT /api/v1/patients/{patient_id}/appearance
+
+描述：更新当日着装特征描述（最高视觉锚点）（来自 SRS FR-TASK-003，SADD §6.7 白名单 `update_daily_appearance`）
+
+Headers:
+```
+X-Trace-Id:   string, 必填
+X-Request-Id: string, 必填
+Authorization: Bearer JWT
+```
+
+Request Body:
+```json
+{
+  "daily_appearance": "string, 必填, <=2000, 当日着装特征描述",
+  "daily_photo_url":  "string, 选填, <=1024, 白名单域名"
+}
+```
+
+Response 200:
+```json
+{
+  "code": "OK",
+  "trace_id": "trc_xxx",
+  "data": { "patient_id": 1001, "updated_at": "2026-04-19T10:00:00Z" }
+}
+```
+
+权限要求：当前用户必须为该患者关联家属（ACTIVE），且患者存在进行中任务时同步更新 `rescue_task.daily_appearance` + `rescue_task.daily_photo_url`
+
+幂等说明：`Redis Key = "idem:req:{X-Request-Id}"，TTL = 24h`
+
+#### 5.3.7 PUT /api/v1/patients/{patient_id}/profile
+
+描述：更新基础档案信息（来自 SRS FR-PRO-001, FR-PRO-002，SADD §6.7 白名单 `update_patient_profile`）
+
+Headers:
+```
+X-Trace-Id:   string, 必填
+X-Request-Id: string, 必填
+Authorization: Bearer JWT
+```
+
+Request Body:
+```json
+{
+  "name":              "string, 选填, 2-64",
+  "gender":            "string, 选填, MALE/FEMALE/UNKNOWN",
+  "birthday":          "string, 选填, ISO date",
+  "photo_url":         "string, 选填, 白名单域名",
+  "medical_history":   "object, 选填",
+  "appearance_tags":   "array, 选填",
+  "long_text_profile": "string, 选填, <=5000"
+}
+```
+
+Response 200: `{ patient_id, profile_version, updated_at }`
+
+权限要求：当前用户必须为该患者关联家属（ACTIVE）
+
+幂等说明：`Redis Key = "idem:req:{X-Request-Id}"，TTL = 24h`
+
+处理逻辑：
+1. 更新 `patient_profile` 对应字段，`profile_version` 自增
+2. 若 `long_text_profile` 变更，同事务写 Outbox 发布 `profile.updated`，触发 ai-vectorizer-service 重建向量
+
 ### 5.4 核心流程伪代码
 
 #### 5.4.1 路人扫码触发 MISSING_PENDING（3 态走失状态机核心流程）
@@ -1743,9 +1875,9 @@ FUNCTION initiatePrimaryTransfer(cmd: TransferCommand):
         IF initiator.relationRole != PRIMARY_GUARDIAN:
             THROW E_PROFILE_4032("仅主监护人可发起转移")
 
-        // 校验无进行中转移
-        existingPending = GuardianRelationRepository
-            .findPendingTransfer(cmd.patientId)
+        // 校验无进行中转移请求
+        existingPending = GuardianTransferRequestRepository
+            .findPendingByPatient(cmd.patientId)
         IF existingPending != null:
             THROW E_PROFILE_4095("已有进行中的转移请求")
 
@@ -1755,15 +1887,21 @@ FUNCTION initiatePrimaryTransfer(cmd: TransferCommand):
         IF target == null OR target.relationStatus != ACTIVE:
             THROW E_PROFILE_4044("目标用户非活跃成员")
 
-        // 聚合根操作（HC-01）
-        initiator.initiateTransfer(cmd.targetUserId, cmd.reason, cmd.expireInSeconds)
+        // 创建独立转移请求记录
+        transferReq = GuardianTransferRequest.create(
+            patientId=cmd.patientId,
+            initiatorUserId=cmd.userId,
+            targetUserId=cmd.targetUserId,
+            reason=cmd.reason,
+            expireInSeconds=cmd.expireInSeconds)
 
-        GuardianRelationRepository.save(initiator)
+        GuardianTransferRequestRepository.save(transferReq)
 
         SysLogRepository.insert(module="GUARDIAN", action="TRANSFER_INITIATED",
             operator_user_id=cmd.userId, object_id=cmd.patientId,
             trace_id=cmd.traceId,
-            detail={target_user_id=cmd.targetUserId, reason=cmd.reason})
+            detail={request_id=transferReq.requestId,
+                    target_user_id=cmd.targetUserId, reason=cmd.reason})
     COMMIT TRANSACTION
 
     // 通知目标受方
@@ -2187,7 +2325,9 @@ Request Body:
 
 #### 6.3.6 POST /api/v1/tags/batch-generate
 
-描述：平台批量发号与导出（来自 SRS FR-MAT-005）
+描述：平台批量发号（异步任务模式）（来自 SRS FR-MAT-005）
+
+> 最大支持 10,000 条，响应体可达 100~200KB，为避免弱网超时，采用异步任务 + 文件下载模式。
 
 Request Body:
 ```json
@@ -2197,7 +2337,48 @@ Request Body:
 }
 ```
 
-Response 200: `{ batch_no, generated_count, tag_codes: [...] }`
+Response 202（任务已受理）:
+```json
+{
+  "code": "ACCEPTED",
+  "trace_id": "trc_xxx",
+  "data": {
+    "job_id":     "job_20260419_001",
+    "batch_no":   "BATCH2026041901",
+    "quantity":   5000,
+    "status":     "PROCESSING",
+    "poll_url":   "/api/v1/tags/batch-generate/jobs/{job_id}"
+  }
+}
+```
+
+#### 6.3.6a GET /api/v1/tags/batch-generate/jobs/{job_id}
+
+描述：查询批量发号任务状态
+
+Response 200（进行中）:
+```json
+{
+  "job_id": "job_20260419_001",
+  "status": "PROCESSING",
+  "progress": 3200,
+  "total":    5000
+}
+```
+
+Response 200（已完成）:
+```json
+{
+  "job_id":       "job_20260419_001",
+  "status":       "COMPLETED",
+  "batch_no":     "BATCH2026041901",
+  "generated_count": 5000,
+  "download_url": "/api/v1/tags/batch-generate/jobs/{job_id}/download",
+  "expires_at":   "2026-04-20T10:00:00Z"
+}
+```
+
+`download_url` 返回 CSV 文件（`tag_code, short_code, qr_content`），签名 URL 有效期 24h。
 
 #### 6.3.7 GET /api/v1/tags/inventory/summary
 
@@ -3151,6 +3332,60 @@ EXCEPTION HANDLING:
     会话归档失败 → 重试 3 次后写 DEAD
 ```
 
+#### 7.4.4 消费 profile.deleted.logical 事件（物理删除向量与会话）
+
+> 来自 SRS FR-PRO-009："删除关联 AI 会话摘要及向量库中该患者的全部 Embedding 向量"。
+> 向量数据须物理删除而非软失效，确保不可恢复。
+
+```
+FUNCTION onProfileDeletedLogical(event: ProfileDeletedLogicalEvent):
+    BEGIN TRANSACTION
+        inserted = ConsumedEventLog.insertIfNotExists(
+            consumer="ai-vectorizer", event_id=event.eventId)
+        IF NOT inserted:
+            RETURN
+
+        patientId = event.payload.patientId
+
+        // ===== 1. 物理删除 vector_store 全部向量（FR-PRO-009）=====
+        deletedCount = VectorStoreRepository
+            .physicalDeleteByPatientId(patientId)
+        // SQL: DELETE FROM vector_store WHERE patient_id = :patientId
+
+        // ===== 2. 归档并删除 AI 会话 =====
+        sessions = AiSessionRepository.findAllByPatient(patientId)
+        FOR EACH session IN sessions:
+            session.archive()
+            AiSessionRepository.save(session)
+
+        // ===== 3. 归档并删除记忆笔记 =====
+        notes = PatientMemoryNoteRepository.findAllByPatient(patientId)
+        FOR EACH note IN notes:
+            note.markExpired()
+            PatientMemoryNoteRepository.save(note)
+            // 同事务 Outbox 发布 memory.expired 触发残留向量清理
+            OutboxRepository.insert(topic="memory.expired",
+                partition_key="patient_{patientId}",
+                payload={note_id=note.noteId, patient_id=patientId},
+                trace_id=event.traceId)
+
+        // ===== 4. 清除配额与豁免缓存 =====
+        Redis.DEL("quota:exempt:patient:{patientId}")
+        Redis.DEL("ai:quota:patient:{patientId}:daily")
+
+        SysLogRepository.insert(module="AI", action="PROFILE_DELETED_CLEANUP",
+            trace_id=event.traceId,
+            detail={patient_id=patientId,
+                    vectors_deleted=deletedCount,
+                    sessions_archived=sessions.size(),
+                    notes_expired=notes.size()})
+    COMMIT TRANSACTION
+
+EXCEPTION HANDLING:
+    物理删除失败 → 重试 3 次后写 DEAD，人工介入
+    Redis 缓存清除失败 → 记录告警，设 TTL=5m 强制过期兜底
+```
+
 ### 7.5 领域事件 Payload 定义
 
 AI 域主要**消费**其他域事件，自身发布的事件较少：
@@ -3943,7 +4178,8 @@ end
 - 扫码验签成功后服务端签发，`HttpOnly; Secure; SameSite=Strict` Cookie 传递
 - TTL 由配置键 `security.entry_token.ttl_seconds` 控制（默认 120s）
 - 一次性消费：Redis `SETNX entry_token:consumed:{jti}`
-- 绑定 IP + 设备指纹，防转移
+- 设备指纹绑定（`device_fingerprint`），防令牌转移（HC-06）
+- IP 校验策略：**宽松模式**——仅校验同 /24 子网段（`ip_prefix_24`），不做精确 IP 绑定。移动网络 NAT/基站切换场景下精确 IP 易变，采用子网前缀足以防范跨地域盗用，配置键 `security.entry_token.ip_match_mode`（默认 `SUBNET_24`，可选 `EXACT` / `DISABLED`）
 
 ### 12.3 身份传播
 
@@ -4057,12 +4293,16 @@ end
 | §5 PROFILE | FR-PRO-006 | `POST /api/v1/patients/{id}/guardians/invitations` | P0 |
 | §5 PROFILE | FR-PRO-007 | `POST /api/v1/patients/{id}/guardians/primary-transfer` | P0 |
 | §5 PROFILE | §5.2.1 | `POST /api/v1/patients/{id}/missing-pending/confirm` | P0 |
+| §5 PROFILE | FR-PRO-010 | `PUT /api/v1/patients/{id}/fence` | P0 |
+| §5 PROFILE | FR-TASK-003 | `PUT /api/v1/patients/{id}/appearance` | P0 |
+| §5 PROFILE | FR-PRO-001 | `PUT /api/v1/patients/{id}/profile` | P0 |
 | §6 MAT | FR-MAT-001 | `POST /api/v1/material/orders` | P0 |
 | §6 MAT | FR-MAT-001 | `POST /api/v1/material/orders/{id}/approve` | P0 |
 | §6 MAT | FR-MAT-002 | `POST /api/v1/material/orders/{id}/ship` | P0 |
 | §6 MAT | FR-MAT-003 | `POST /api/v1/tags/{code}/bind` | P0 |
 | §6 MAT | §5.2.3 | `POST /api/v1/tags/{code}/loss/confirm` | P0 |
 | §6 MAT | FR-MAT-005 | `POST /api/v1/tags/batch-generate` | P0 |
+| §6 MAT | FR-MAT-005 | `GET /api/v1/tags/batch-generate/jobs/{id}` | P0 |
 | §6 MAT | FR-MAT-006 | `GET /api/v1/tags/inventory/summary` | P0 |
 | §7 AI | FR-AI-001 | `POST /api/v1/ai/sessions/{id}/messages` | P0 |
 | §7 AI | FR-AI-007 | `POST /api/v1/ai/sessions/{id}/intents/{iid}/confirm` | P0 |

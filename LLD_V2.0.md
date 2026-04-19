@@ -94,7 +94,7 @@ NotificationPort（出口接口）
 | clue-intake-service | CLUE 域（入口） | `clue_record`（原始段） | 匿名线索入口、标准化与入站削峰 | `clue.reported.raw`、`clue.vectorize.requested`、`clue.scan.normal_patient`、`tag.suspected_lost` | — |
 | clue-analysis-service | CLUE 域（研判） | `clue_record` | 时空研判、围栏判定、可疑线索识别 | `clue.validated`、`clue.suspected`、`track.updated`、`fence.breached` | `clue.reported.raw`、`task.state.changed` |
 | clue-trajectory-service | CLUE 域（轨迹） | `patient_trajectory` | 轨迹聚合、窗口归档、终态 Flush | `track.updated`（聚合后） | `clue.validated`、`task.closed.found`、`task.closed.false_alarm` |
-| ai-orchestrator-service | AI 域 | `ai_session`、配额账本 | AI Agent 自然语言交互、Function Calling 编排（Spring AI Alibaba）、上下文组装、推理、策略事件 | `ai.strategy.generated`、`ai.poster.generated`、`memory.appended`、`memory.expired` | `clue.validated`、`track.updated`、`task.created`、`task.closed.found`、`task.sustained` |
+| ai-orchestrator-service | AI 域 | `ai_session`、配额账本 | AI Agent 自然语言交互、Function Calling 编排（Spring AI Alibaba）、上下文组装、推理、策略事件 | `ai.strategy.generated`、`ai.poster.generated`、`memory.appended`、`memory.expired` | `clue.validated`、`track.updated`、`task.created`、`task.closed.found`、`task.closed.false_alarm`、`task.sustained` |
 | ai-vectorizer-service | AI 域 | `vector_store` | 文本切片、向量写入、失效清理 | — | `profile.created`、`profile.updated`、`profile.deleted.logical`、`memory.appended`、`memory.expired`、`clue.vectorize.requested` |
 | material-service | MAT 域 | `tag_asset`、`tag_apply_record` | 标签主数据、绑定流程、工单流转、发货、异常处置 | `tag.allocated`、`tag.bound`、`tag.loss.confirmed`、`material.order.created`、`material.order.approved` | `tag.suspected_lost`、`profile.deleted.logical` |
 | notify-service | GOV 域（通知子能力） | `notification_inbox` | 事件消费、模板组装、多渠道分发（经 `NotificationPort`） | `notification.sent` | `task.created`、`task.closed.found`、`task.closed.false_alarm`、`task.sustained`、`fence.breached`、`patient.missing_pending`、`patient.confirmed_safe` |
@@ -2287,6 +2287,47 @@ FUNCTION onTagSuspectedLost(event: TagSuspectedLostEvent):
         patient_id: tag.patientId})
 ```
 
+#### 6.4.4 消费 profile.deleted.logical 事件（标签强制作废）
+
+```
+FUNCTION onProfileDeletedLogical(event: ProfileDeletedEvent):
+    // SADD §4.4.3：档案注销时关联标签强制 VOIDED（FR-PRO-009）
+    BEGIN TRANSACTION
+        inserted = ConsumedEventLog.insertIfNotExists(
+            consumer="mat-service", event_id=event.eventId)
+        IF NOT inserted:
+            RETURN
+
+        patientId = event.payload.patientId
+
+        // 查询该患者所有非终态标签
+        tags = TagAssetRepository.findByPatientIdAndStatusNotIn(
+            patientId, excludeStatuses=[VOIDED])
+
+        FOR EACH tag IN tags:
+            // 聚合根操作（HC-01）
+            tag.voidTag(reason="档案注销强制作废", userId=0)  // 系统操作
+            TagAssetRepository.save(tag)
+
+            // Outbox（HC-02）
+            OutboxRepository.insert(topic="tag.voided",
+                partition_key="tag_{tag.tagCode}",
+                payload={tag_code=tag.tagCode, patient_id=patientId,
+                         reason="PROFILE_DELETED"},
+                trace_id=event.traceId)
+
+        SysLogRepository.insert(module="MAT", action="TAGS_FORCE_VOIDED",
+            trace_id=event.traceId,
+            detail={patient_id=patientId,
+                    voided_count=tags.size(),
+                    tag_codes=tags.map(t -> t.tagCode)})
+    COMMIT TRANSACTION
+
+EXCEPTION HANDLING:
+    标签不存在 → 静默跳过（幂等安全）
+    部分标签已终态 → 跳过该标签，继续处理其余
+```
+
 ### 6.5 领域事件 Payload 定义
 
 #### 6.5.1 tag.allocated
@@ -2644,6 +2685,44 @@ ContextAssembler ..> CQP : "只读 A0"
 @enduml
 ```
 
+### 7.2a Agent Function Calling 白名单与确认等级（来自 SADD §6.7）
+
+> 本表作为前端渲染确认按钮与后端 Policy Guard 校验的共同基线。
+
+**家属侧操作**：
+
+| `action` | 目标接口 | 确认等级 | 说明 |
+| :--- | :--- | :---: | :--- |
+| `query_task_snapshot` | `GET /api/v1/rescue/tasks/{id}/snapshot` | A0 | 只读自动执行 |
+| `query_trajectory` | `GET /api/v1/rescue/tasks/{id}/trajectory/latest` | A0 | 只读自动执行 |
+| `query_patient_profile` | `GET /api/v1/patients/{id}` | A0 | 只读自动执行 |
+| `query_clue_list` | `GET /api/v1/rescue/tasks/{id}/clues` | A0 | 只读自动执行 |
+| `generate_poster` | `POST /api/v1/ai/poster` | A1 | 输出 JSON 文案，无需确认 |
+| `create_rescue_task` | `POST /api/v1/rescue/tasks` | A2 (`CONFIRM_1`) | 家属确认后执行 |
+| `submit_material_order` | `POST /api/v1/material/orders` | A2 (`CONFIRM_1`) | 家属确认 |
+| `report_tag_lost` | `POST /api/v1/tags/{code}/loss/confirm` | A2 (`CONFIRM_1`) | 家属勾选确认 |
+| `update_fence_config` | `PUT /api/v1/patients/{id}/fence` | A2 (`CONFIRM_1`) | 禁止 AI 直接关闭围栏 |
+| `update_daily_appearance` | `PUT /api/v1/patients/{id}/appearance` | A2 (`CONFIRM_1`) | 最高视觉锚点 |
+| `update_patient_profile` | `PUT /api/v1/patients/{id}/profile` | A2 (`CONFIRM_1`) | 长期 RAG 素材 |
+| `propose_close_found` | `POST /api/v1/rescue/tasks/{id}/close` | A3 (`CONFIRM_2`) | 极高风险，物理点击 |
+
+**管理与治理操作**：
+
+| `action` | 目标接口 | 确认等级 | 说明 |
+| :--- | :--- | :---: | :--- |
+| `clue_override` | `POST /api/v1/clues/{id}/override` | A3 (`CONFIRM_2`) | 管理员复核通过 |
+| `clue_reject` | `POST /api/v1/clues/{id}/reject` | A3 (`CONFIRM_2`) | 管理员驳回 |
+| `approve_material_order` | `PUT /api/v1/admin/material/orders/{id}/approve` | A3 (`CONFIRM_2`) | 审核通过 |
+| `replay_outbox_dead` | `POST /api/v1/admin/super/outbox/dead/{id}/replay` | A3 (`CONFIRM_3`) | DEAD 事件重放 |
+| `force_close_task` | `POST /api/v1/admin/super/rescue/tasks/{id}/force-close` | A4 (`MANUAL_ONLY`) | 仅人工页面 |
+
+**前端渲染规则**：
+- A0：自动执行，无需渲染确认按钮
+- A1：展示 AI 建议内容，用户可选择采纳
+- A2：必须渲染「确认执行」按钮 + 预填信息摘要
+- A3：必须渲染「确认执行」按钮 + 风险提示 + 二次确认弹窗
+- A4：禁止 AI 触发，前端不渲染 AI 入口
+
 ### 7.3 API 契约
 
 #### 7.3.1 POST /api/v1/ai/sessions/{session_id}/messages
@@ -2952,6 +3031,64 @@ FUNCTION onProfileEvent(event: ProfileEvent):
 EXCEPTION HANDLING:
     Embedding API 超时 → 重试 3 次后写 DEAD 事件，人工介入
     维度不匹配 → 失败快返 + 审计，禁止隐式截断
+```
+
+#### 7.4.3 消费 task.closed.* 事件（清除走失豁免）
+
+```
+FUNCTION onTaskClosed(event: TaskClosedEvent):
+    // 适用事件：task.closed.found / task.closed.false_alarm
+    BEGIN TRANSACTION
+        inserted = ConsumedEventLog.insertIfNotExists(
+            consumer="ai-orchestrator", event_id=event.eventId)
+        IF NOT inserted:
+            RETURN
+
+        patientId = event.payload.patientId
+        taskId    = event.payload.taskId
+        closeType = event.payload.closeType  // "FOUND" / "FALSE_ALARM"
+
+        // ===== 1. 清除 Redis 走失豁免标记（SADD §6.3）=====
+        Redis.DEL("quota:exempt:patient:{patientId}")
+
+        // ===== 2. 会话归档 =====
+        sessions = AiSessionRepository.findActiveByPatientAndTask(patientId, taskId)
+        FOR EACH session IN sessions:
+            session.archive()
+            AiSessionRepository.save(session)
+
+        // ===== 3. 记忆沉淀（仅 FOUND）=====
+        IF closeType == "FOUND":
+            // 沉淀 RESCUE_CASE 类型记忆（FR-TASK-005）
+            note = PatientMemoryNote.create(
+                patientId=patientId, kind="RESCUE_CASE",
+                content=buildRescueSummary(event),
+                sourceEventId=event.eventId)
+            PatientMemoryNoteRepository.save(note)
+
+            // 同事务 Outbox（HC-02）
+            OutboxRepository.insert(topic="memory.appended",
+                partition_key="patient_{patientId}",
+                payload={note_id=note.noteId, patient_id=patientId,
+                         kind="RESCUE_CASE", source_event_id=event.eventId},
+                trace_id=event.traceId)
+
+        IF closeType == "FALSE_ALARM":
+            // 禁止沉淀 RESCUE_CASE（BR-003）
+            // 标记关联向量为失效，阻断 RAG 召回
+            VectorStoreRepository.invalidateByTaskId(taskId)
+            LOG.audit("false_alarm_data_blocked",
+                {patient_id=patientId, task_id=taskId, trace_id=event.traceId})
+
+        SysLogRepository.insert(module="AI", action="TASK_CLOSED_CONSUMED",
+            trace_id=event.traceId,
+            detail={task_id=taskId, close_type=closeType,
+                    exempt_cleared=true})
+    COMMIT TRANSACTION
+
+EXCEPTION HANDLING:
+    Redis.DEL 失败 → 记录告警，设 TTL=5m 强制过期兜底
+    会话归档失败 → 重试 3 次后写 DEAD
 ```
 
 ### 7.5 领域事件 Payload 定义
@@ -3397,6 +3534,20 @@ FUNCTION onBusinessEvent(event: DomainEvent):
         IF NOT inserted:
             RETURN
 
+        // ===== 通知节流（防消息轰炸）=====
+        // 对有效线索类事件（clue.validated / track.updated），按患者粒度做最小间隔控制
+        IF event.eventType IN ("clue.validated", "track.updated", "fence.breached"):
+            patientId = event.payload.patientId
+            throttleKey = "notify:throttle:patient:{patientId}:{event.eventType}"
+            throttleSeconds = ConfigCenter.get(
+                "notification.clue_throttle.interval_seconds")  // HC-05，默认 300
+            IF Redis.SETNX(throttleKey, event.eventId, TTL=throttleSeconds) == false:
+                // 在节流窗口内，仅写站内通知，不触发 WebSocket / JPush
+                NotificationInboxRepository.save(
+                    NotificationBuilder.buildSilent(event))
+                LOG.info("通知节流命中, patient={}, event={}", patientId, event.eventType)
+                RETURN
+
         // 路由规则：根据事件类型决定通知渠道与目标用户
         routingRules = NotificationRouter.resolve(event.eventType)
 
@@ -3447,9 +3598,16 @@ ROUTING_RULES:
   task.created          → [WebSocket(家属), JPush(家属)]
   task.closed.found     → [WebSocket(家属), JPush(家属)]
   task.closed.false_alarm → [WebSocket(家属), JPush(家属)]
-  fence.breached        → [WebSocket(家属, level=CRITICAL), JPush(家属)]
+  clue.validated        → [WebSocket(家属), JPush(家属)]  // 受节流控制
+  track.updated         → [WebSocket(家属)]                // 受节流控制，仅在线推送
+  fence.breached        → [WebSocket(家属, level=CRITICAL), JPush(家属)]  // 受节流控制
   patient.missing_pending → [WebSocket(家属, level=CRITICAL), JPush(家属)]
   tag.suspected_lost    → [WebSocket(主监护人), JPush(主监护人)]
+
+  // 节流配置（按患者粒度，防消息轰炸）
+  // 配置键：notification.clue_throttle.interval_seconds（默认 300，管理员可调）
+  // 节流范围：clue.validated / track.updated / fence.breached
+  // 节流窗口内新事件仅写站内通知，不触发 WebSocket / JPush
 
   // 账户类事件 → 仅邮件（HC-08）
   account.registered    → [Email(注册用户)]
@@ -3586,6 +3744,7 @@ COMMIT TRANSACTION
 | `risk:manual:cooldown:{short_code}` | 短码冷却 | 配置键 `risk.manual_entry.cooldown.minutes` |
 | `entry_token:consumed:{jti}` | entry_token 单次消费 | 120s |
 | `intent:{intent_id}` | AI 意图缓存 | 配置键 `ai.intent.expire_seconds` |
+| `notify:throttle:patient:{pid}:{event_type}` | 通知节流窗口（按患者+事件类型） | 配置键 `notification.clue_throttle.interval_seconds`，默认 300 |
 | `dedup:topic:{event_id}` | 可选一级幂等缓存 | 7d |
 
 ### 10.2 L1/L2 更新规则

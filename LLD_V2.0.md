@@ -396,7 +396,7 @@ Request Body:
 Response 200:
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_xxx",
   "data": {
@@ -446,7 +446,7 @@ Request Body:
 Response 200:
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_xxx",
   "data": {
@@ -476,7 +476,7 @@ Response 4xx:
 Response 200:
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "trace_id": "trc_xxx",
   "data": {
     "task_id": 8848,
@@ -1028,7 +1028,7 @@ Request Body:
 Response 200:
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "trace_id": "trc_xxx",
   "data": {
     "manual_entry_token": "string, 一次性令牌, TTL=300s"
@@ -1466,15 +1466,15 @@ EXCEPTION HANDLING:
 | `patient_id` | bigint | 归属患者 | — |
 | `initiator_user_id` | bigint | 发起人（当前主监护人） | FR-PRO-007 |
 | `target_user_id` | bigint | 受方（必须是 ACTIVE 成员） | FR-PRO-007 |
-| `status` | varchar(32) | `PENDING_CONFIRM`/`ACCEPTED`/`REJECTED`/`CANCELLED`/`EXPIRED` | SRS §5.2.6 |
+| `status` | varchar(32) | `PENDING_CONFIRM`/`COMPLETED`/`REJECTED`/`REVOKED`/`EXPIRED` | SRS §5.2.6 |
 | `reason` | varchar(256) | 发起原因 | — |
 | `expire_at` | timestamptz | 过期时间 | — |
 | `confirmed_at` | timestamptz | 确认时间 | — |
 | `rejected_at` | timestamptz | 拒绝时间 | — |
 | `reject_reason` | varchar(256) | 拒绝原因 | — |
-| `cancelled_by` | bigint | 撤销操作人 | — |
-| `cancelled_at` | timestamptz | 撤销时间 | — |
-| `cancel_reason` | varchar(256) | 撤销原因 | — |
+| `revoked_by` | bigint | 撤销操作人 | — |
+| `revoked_at` | timestamptz | 撤销时间 | — |
+| `revoke_reason` | varchar(256) | 撤销原因 | — |
 | `trace_id` | varchar(64) | 链路标识 **（HC-04）** | SADD HC-04 |
 | `created_at` | timestamptz | 创建时间 | — |
 | `updated_at` | timestamptz | 更新时间 | — |
@@ -1703,7 +1703,7 @@ Request Body:
 Response 200:
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "trace_id": "trc_xxx",
   "data": {
     "patient_id": 1001,
@@ -1739,7 +1739,7 @@ Request Body:
 Response 200:
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "trace_id": "trc_xxx",
   "data": { "patient_id": 1001, "updated_at": "2026-04-19T10:00:00Z" }
 }
@@ -1849,7 +1849,7 @@ FUNCTION scheduleMissingPendingTimeout():
             remark: "MISSING_PENDING超时自动升级"
         }, headers={X-Action-Source: "SYSTEM", X-Trace-Id: newTraceId()})
 
-        IF result.code == "OK":
+        IF result.code == "ok":
             // task.created 事件将驱动 PROFILE 域迁移 lost_status → MISSING
             // 同时发送二次强提醒
             NotificationPort.send(WebSocket, {type: "AUTO_UPGRADE_ALERT",
@@ -2951,11 +2951,8 @@ ContextAssembler ..> CQP : "只读 A0"
 
 | `action` | 目标接口 | 确认等级 | 说明 |
 | :--- | :--- | :---: | :--- |
-| `clue_override` | `POST /api/v1/clues/{id}/override` | A3 (`CONFIRM_2`) | 管理员复核通过 |
-| `clue_reject` | `POST /api/v1/clues/{id}/reject` | A3 (`CONFIRM_2`) | 管理员驳回 |
-| `approve_material_order` | `PUT /api/v1/admin/material/orders/{id}/approve` | A3 (`CONFIRM_2`) | 审核通过 |
+| `approve_material_order` | `POST /api/v1/material/orders/{id}/approve` | A3 (`CONFIRM_2`) | 审核通过 |
 | `replay_outbox_dead` | `POST /api/v1/admin/super/outbox/dead/{id}/replay` | A3 (`CONFIRM_3`) | DEAD 事件重放 |
-| `force_close_task` | `POST /api/v1/admin/super/rescue/tasks/{id}/force-close` | A4 (`MANUAL_ONLY`) | 仅人工页面 |
 
 **前端渲染规则**：
 - A0：自动执行，无需渲染确认按钮

@@ -285,14 +285,14 @@ CREATE TABLE guardian_transfer_request (
     confirmed_at        timestamptz,
     rejected_at         timestamptz,
     reject_reason       varchar(256),
-    cancelled_by        bigint,
-    cancelled_at        timestamptz,
-    cancel_reason       varchar(256),
+    revoked_by          bigint,
+    revoked_at          timestamptz,
+    revoke_reason       varchar(256),
     trace_id            varchar(64)     NOT NULL,
     created_at          timestamptz     NOT NULL DEFAULT now(),
     updated_at          timestamptz     NOT NULL DEFAULT now(),
 
-    CONSTRAINT ck_transfer_status CHECK (status IN ('PENDING_CONFIRM','ACCEPTED','REJECTED','CANCELLED','EXPIRED'))
+    CONSTRAINT ck_transfer_status CHECK (status IN ('PENDING_CONFIRM','COMPLETED','REJECTED','REVOKED','EXPIRED'))
 );
 
 COMMENT ON TABLE guardian_transfer_request IS '监护权转移请求表 — 临时性主监护权转移，独立生命周期';

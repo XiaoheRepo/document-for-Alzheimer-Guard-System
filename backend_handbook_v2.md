@@ -235,7 +235,7 @@ infrastructure ───────────────┘（实现 domain 
 | clue-trajectory-service | CLUE（轨迹） | `patient_trajectory` | `track.updated`（聚合后） | `clue.validated`、`task.closed.found`、`task.closed.false_alarm` |
 | ai-orchestrator-service | AI | `ai_session`、`ai_quota_ledger` | `ai.strategy.generated`、`ai.poster.generated`、`memory.appended`、`memory.expired` | `clue.validated`、`track.updated`、`task.created`、`task.closed.found`、`task.closed.false_alarm`、`task.sustained` |
 | ai-vectorizer-service | AI | `vector_store` | — | `profile.created`、`profile.updated`、`profile.deleted.logical`、`memory.appended`、`memory.expired`、`clue.vectorize.requested` |
-| material-service | MAT | `tag_asset`、`tag_apply_record` | `tag.allocated`、`tag.bound`、`tag.loss.confirmed`、`material.order.created` | `tag.suspected_lost`、`profile.deleted.logical` |
+| material-service | MAT | `tag_asset`、`tag_apply_record` | `tag.allocated`、`tag.bound`、`tag.loss.confirmed`、`material.order.created`、`material.order.approved`、`material.order.shipped` | `tag.suspected_lost`、`profile.deleted.logical` |
 | notify-service | GOV（通知） | `notification_inbox` | `notification.sent` | `task.created`、`task.closed.found`、`task.closed.false_alarm`、`task.sustained`、`fence.breached`、`patient.missing_pending`、`patient.confirmed_safe`、`clue.validated`、`track.updated`、`tag.suspected_lost` |
 | ws-gateway-service | GOV（WebSocket） | Redis 路由态 | — | Redis Pub/Sub `ws.push.{pod_id}` |
 | admin-review-service | GOV（审计） | `clue_record` 审核字段 | `clue.overridden`、`clue.rejected` | `clue.suspected` |
@@ -466,7 +466,7 @@ infrastructure ───────────────┘（实现 domain 
 
 ```java
 public class Result<T> {
-    private String code;       // 业务码，成功为 "0"
+    private String code;       // 业务码，成功为 "ok"
     private String message;    // 描述
     private String traceId;    // 链路追踪 ID
     private T data;            // 业务数据
@@ -643,7 +643,7 @@ public interface RescueTaskConverter {
 1. ID 字段在 API 线传必须为 `string`（根据 API V2.0 §1.11）。
 2. 时间字段统一 `ISO 8601` UTC 格式（`timestamptz`）。
 3. `coord_system` 入库固定 `WGS84`（坐标转换在网关层完成）。
-4. `clue_record.source_type` 取值 `SCAN` / `MANUAL` / `POSTER`。
+4. `clue_record.source_type` 取值 `SCAN` / `MANUAL` / `POSTER_SCAN`。
 5. `clue_record.review_status` 仅 `suspect_flag=true` 时可用，非可疑必须为 `null`。
 
 ---
@@ -738,10 +738,10 @@ stateDiagram-v2
 | `id` | `BIGINT` | 主键 |
 | `patient_id` | `BIGINT` | 关联患者 |
 | `task_id` | `BIGINT` | 关联任务（可空） |
-| `source_type` | `VARCHAR(16)` | `SCAN` / `MANUAL` / `POSTER` |
+| `source_type` | `VARCHAR(20)` | `SCAN` / `MANUAL` / `POSTER_SCAN` |
 | `location` | `GEOMETRY(Point, 4326)` | 上报坐标（WGS84） |
-| `photo_url` | `VARCHAR(512)` | 照片（OSS Key） |
-| `risk_score` | `NUMERIC(5,2)` | 风险分 |
+| `photo_url` | `VARCHAR(1024)` | 照片（OSS Key） |
+| `risk_score` | `NUMERIC(5,4)` | 风险分 |
 | `suspect_flag` | `BOOLEAN` | 是否可疑 |
 | `review_status` | `VARCHAR(16)` | `PENDING` / `OVERRIDDEN` / `REJECTED`（仅 `suspect_flag=true`） |
 | `device_fingerprint` | `VARCHAR(128)` | 设备指纹（HC-06） |
@@ -831,9 +831,9 @@ stateDiagram-v2
 | 当前状态 | 触发动作 | 下一状态 | 守卫 |
 | :--- | :--- | :--- | :--- |
 | — | 发起转移 | `PENDING_CONFIRM` | 同患者仅一个 `PENDING_CONFIRM` |
-| `PENDING_CONFIRM` | 受方接受 | `ACCEPTED` | 仅目标受方 + `relation_status=ACTIVE` |
+| `PENDING_CONFIRM` | 受方接受 | `COMPLETED` | 仅目标受方 + `relation_status=ACTIVE` |
 | `PENDING_CONFIRM` | 受方拒绝 | `REJECTED` | `reject_reason` 必填 |
-| `PENDING_CONFIRM` | 发起方撤销 | `CANCELLED` | 仅原发起方或 SUPERADMIN |
+| `PENDING_CONFIRM` | 发起方撤销 | `REVOKED` | 仅原发起方或 SUPERADMIN |
 | `PENDING_CONFIRM` | 超时 | `EXPIRED` | 定时任务触发 |
 | 终态 | 任何 | 原状态 | 终态不可变 |
 
@@ -867,7 +867,7 @@ stateDiagram-v2
 
 ### 6.10 围栏配置与抑制语义（必须）
 
-1. `fence_enabled=true` 时，`fence_center` 与 `fence_radius_m` 必须同时存在，半径 50-5000 米。
+1. `fence_enabled=true` 时，`fence_center` 与 `fence_radius_m` 必须同时存在，半径 100-50000 米。
 2. `fence_enabled=false` 时，`fence_center` 与 `fence_radius_m` 同时置空。
 3. `lost_status=NORMAL` 允许 `fence.breached` 触发告警；`lost_status=MISSING` 必须抑制围栏告警风暴，仅保留 `track.updated`。
 4. 围栏判定基于 L1/L2 投影缓存，不得高频同步 RPC 拉取 task-service。
@@ -979,12 +979,12 @@ void assertOwnership(Long operatorId, Long patientId, String role) {
 
 `POST /api/v1/public/clues/manual-entry`：
 
-1. 输入 `short_code`（6 位）+ `pin_code`（6 位）+ `captcha_token` + `device_fingerprint`。
+1. 输入 `short_code`（6 位）+ `captcha_token`（人机校验）+ `device_fingerprint`。
 2. 成功后同时返回 `manual_entry_token` 与 `Set-Cookie(entry_token)`，两者值一致。
 3. 频控覆盖：IP 级、设备级、`short_code` 连续失败冷却。
 4. 额外频控：同一 IP + `device_fingerprint`，5 分钟内最多 2 次成功验证。
 5. 令牌 TTL = 120 秒，Cookie `Max-Age=120`。
-6. `source_type=MANUAL` 时 `photo_url` 为必填字段。
+6. `source_type=MANUAL` 时 `photo_urls` 为必填字段。
 
 ### 7.9 坐标处理规范（必须）
 
@@ -1010,7 +1010,7 @@ void assertOwnership(Long operatorId, Long patientId, String role) {
 | `today_appearance` | `task.todayAppearance` | `rescue_task.daily_appearance` | 当日着装（API↔DB 命名别名） |
 | `today_photo_url` | `task.todayPhotoUrl` | `rescue_task.daily_photo_url` | OSS Key（API↔DB 命名别名） |
 | `close_type` | `task.closeType` | `rescue_task.close_type` | `FOUND` / `FALSE_ALARM` |
-| `source_type` | `clue.sourceType` | `clue_record.source_type` | `SCAN` / `MANUAL` / `POSTER` |
+| `source_type` | `clue.sourceType` | `clue_record.source_type` | `SCAN` / `MANUAL` / `POSTER_SCAN` |
 | `suspect_reason` | `clue.suspectReason` | `clue_record.suspect_reason` | — |
 | `review_status` | `clue.reviewStatus` | `clue_record.review_status` | 可空 |
 | `override_reason` | `clue.overrideReason` | `clue_record.override_reason` | — |
@@ -1024,7 +1024,7 @@ void assertOwnership(Long operatorId, Long patientId, String role) {
 | `invitation_status` | `invitation.status` | `guardian_invitation.status` | `PENDING` / `ACCEPTED` / `REJECTED` / `EXPIRED` / `REVOKED` |
 | `fence_enabled` | `profile.fenceEnabled` | `patient_profile.fence_enabled` | — |
 | `fence_center` | `profile.fenceCenter` | `patient_profile.fence_center` | `GEOMETRY(Point, 4326)` |
-| `fence_radius_m` | `profile.fenceRadiusM` | `patient_profile.fence_radius_m` | 50-5000 |
+| `fence_radius_m` | `profile.fenceRadiusM` | `patient_profile.fence_radius_m` | 100-50000 |
 | `lost_status` | `profile.lostStatus` | `patient_profile.lost_status` | 三态 |
 | `ship_remark` | `order.shipRemark` | `tag_apply_record.ship_remark` | 发货备注 |
 | `exception_reason` | `order.exceptionReason` | `tag_apply_record.exception_reason` | 物流异常原因 |
@@ -1257,7 +1257,9 @@ return 1
 | 26 | `tag.suspected_lost` | clue-intake-service | material-service、notify-service |
 | 27 | `tag.loss.confirmed` | material-service | — |
 | 28 | `material.order.created` | material-service | — |
-| 29 | `notification.sent` | notify-service | — |
+| 29 | `material.order.approved` | material-service | — |
+| 30 | `material.order.shipped` | material-service | — |
+| 31 | `notification.sent` | notify-service | — |
 
 ### 11.3 统一 Envelope（必须）
 
@@ -1364,21 +1366,17 @@ Action 白名单映射（对齐 API V2.0 §6）：
 | action | 执行等级 | 目标接口 | 最低确认 | 执行约束 |
 | :--- | :---: | :--- | :--- | :--- |
 | `query_task_snapshot` | A0 | `GET /api/v1/rescue/tasks/{task_id}/snapshot` | — | 只读，自动执行 |
-| `query_trajectory` | A0 | `GET /api/v1/rescue/tasks/{task_id}/trajectory` | — | 只读，自动执行 |
+| `query_trajectory` | A0 | `GET /api/v1/rescue/tasks/{task_id}/trajectory/latest` | — | 只读，自动执行 |
 | `query_clues` | A0 | `GET /api/v1/clues` | — | 只读，自动执行 |
 | `query_patient_profile` | A0 | `GET /api/v1/patients/{patient_id}` | — | 只读，自动执行 |
-| `update_appearance` | A1 | `PUT /api/v1/patients/{patient_id}/appearance` | `CONFIRM_1` | 低风险写入 |
+| `update_daily_appearance` | A2 | `PUT /api/v1/patients/{patient_id}/appearance` | `CONFIRM_1` | 当日着装为最高视觉锚点 |
 | `generate_poster` | A1 | `POST /api/v1/ai/poster` | `CONFIRM_1` | 低风险写入 |
 | `create_task` | A2 | `POST /api/v1/rescue/tasks` | `CONFIRM_2` | 高风险写入，用户确认 |
 | `close_task` | A2 | `POST /api/v1/rescue/tasks/{task_id}/close` | `CONFIRM_2` | 高风险写入，用户确认 |
 | `sustained_task` | A2 | `POST /api/v1/rescue/tasks/{task_id}/sustained` | `CONFIRM_2` | 高风险写入 |
 | `confirm_missing` | A3 | `POST /api/v1/patients/{patient_id}/missing-pending/confirm` | `CONFIRM_3` | 行政级操作，二次确认 |
-| `clue_override` | A2 | `POST /api/v1/clues/{clue_id}/override` | `CONFIRM_2` | 高风险写入 |
-| `clue_reject` | A2 | `POST /api/v1/clues/{clue_id}/reject` | `CONFIRM_2` | 高风险写入 |
-| `approve_material_order` | A2 | `PUT /api/v1/admin/material/orders/{order_id}/approve` | `CONFIRM_2` | 高风险写入 |
-| `archive_session` | A1 | `POST /api/v1/ai/sessions/{session_id}/archive` | `CONFIRM_1` | 低风险写入 |
+| `approve_material_order` | A2 | `POST /api/v1/material/orders/{order_id}/approve` | `CONFIRM_2` | 高风险写入 |
 | `replay_outbox_dead` | A3 | `POST /api/v1/admin/super/outbox/dead/{event_id}/replay` | `CONFIRM_3` | 行政级操作 |
-| `force_close_task` | A4 | `POST /api/v1/admin/super/rescue/tasks/{task_id}/force-close` | `MANUAL_ONLY` | 禁止自动执行，仅人工 |
 
 ### 12.2 匿名链路安全（必须）
 
@@ -1390,7 +1388,7 @@ Action 白名单映射（对齐 API V2.0 §6）：
 ### 12.3 敏感信息保护（必须）
 
 1. 患者敏感信息不得出现在匿名接口响应。
-2. 日志不得输出明文 `pin_code`、`token`、密码。
+2. 日志不得输出明文 `token`、密码。
 3. `photo_url` 必须白名单域名（OSS Bucket 域名）。
 4. PII 字段（姓名、手机、坐标、邮箱）在 VO 层必须标注 `@Desensitize` 并说明脱敏规则（HC-07）。
 5. 路人端照片必须叠加半透明时间戳水印（BR-010）。
@@ -1694,9 +1692,9 @@ compile → checkstyle → unit-test（含 ArchUnit）→ integration-test → c
 | ACC-BE-001 | 扫码标签 `BOUND` → 路由到线索上报页 | FR-CLUE-008 |
 | ACC-BE-002 | 扫码标签 `LOST` → 路由到紧急上报页 | FR-CLUE-008 |
 | ACC-BE-003 | 扫码 `UNBOUND` / `ALLOCATED` / `VOIDED` → 拦截 | FR-CLUE-008、BR-007 |
-| ACC-BE-004 | 手动兜底 short_code + pin_code + captcha | FR-CLUE-003 |
+| ACC-BE-004 | 手动兜底 short_code + captcha（人机校验） | FR-CLUE-003 |
 | ACC-BE-005 | 存疑线索 override / reject 分支 | FR-CLUE-005 |
-| ACC-BE-006 | 主监护转移 ACCEPT / REJECT | FR-PRO-005 |
+| ACC-BE-006 | 主监护转移 COMPLETED / REJECT | FR-PRO-005 |
 | ACC-BE-007 | 移除存在未决转移的成员 | FR-PRO-006、BR-006 |
 | ACC-BE-008 | FALSE_ALARM 关闭缺少 reason 被拒 | FR-TASK-003/004 |
 | ACC-BE-009 | 围栏开启/关闭输入组合校验 | FR-PRO-008 |

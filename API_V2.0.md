@@ -67,7 +67,7 @@
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_001",
   "data": {}
@@ -98,7 +98,7 @@
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_xxx",
   "data": {
@@ -115,7 +115,7 @@
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_xxx",
   "data": {
@@ -441,7 +441,7 @@
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_001",
   "data": {
@@ -516,7 +516,7 @@
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_002",
   "data": {
@@ -579,7 +579,7 @@
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_003",
   "data": {
@@ -675,7 +675,7 @@
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_004",
   "data": {
@@ -730,7 +730,7 @@
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_005",
   "data": {
@@ -776,7 +776,7 @@
 | 4 | POST | `/api/v1/clues/{clue_id}/override` | 复核覆写（可疑→有效） | JWT |
 | 5 | POST | `/api/v1/clues/{clue_id}/reject` | 复核驳回（可疑→无效） | JWT |
 | 6 | GET | `/api/v1/clues` | 线索列表查询 | JWT |
-| 7 | GET | `/api/v1/rescue/tasks/{task_id}/trajectory` | 轨迹查询 | JWT |
+| 7 | GET | `/api/v1/rescue/tasks/{task_id}/trajectory/latest` | 轨迹查询 | JWT |
 
 ---
 
@@ -797,16 +797,19 @@
 **处理逻辑**：
 
 1. 解密 `resource_token`，校验 `kid`、`tag_code`、`tag_type`。
-2. 查询标签状态 `tag_asset`，必须为 `BINDABLE` / `BINDABLE_ERRATUM` / `ACTIVE`。
+2. 查询标签状态 `tag_asset`。
 3. 通过 `short_code` 查询患者信息。
 4. 签发 `entry_token`（JWT），存入 HttpOnly Cookie（`Secure; SameSite=Strict`）。TTL 由 `security.entry_token.ttl_seconds` 配置（默认 120s）。
-5. 302 重定向至 `/p/{short_code}/report?tag_type={tag_type}`。
+5. 根据标签状态路由：
+   - `BOUND` → 302 重定向至 `/p/{short_code}/clues/new`
+   - `LOST` / `SUSPECTED_LOST` → 302 重定向至 `/p/{short_code}/emergency/report`
+   - `UNBOUND` / `ALLOCATED` / `VOIDED` → 拦截页（不下发 `entry_token`）
 
 **Response (HTTP 302)**：
 
 ```
 HTTP/1.1 302 Found
-Location: /p/A3B7K9/report?tag_type=QR_CODE
+Location: /p/A3B7K9/clues/new
 Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; Path=/api/v1/clues
 ```
 
@@ -858,11 +861,11 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_006",
   "data": {
-    "redirect_url": "/p/A3B7K9/report",
+    "redirect_url": "/p/A3B7K9/clues/new",
     "entry_token_set": true
   }
 }
@@ -915,7 +918,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
   "longitude":           "number, 必填, -180.0 ~ 180.0",
   "coord_system":        "string, 默认 GCJ-02, 枚举: WGS84 / GCJ-02 / BD-09",
   "description":         "string, 可选, 最大长度 1000",
-  "photo_urls":          ["string, 可选, OSS 白名单 URL, 最多 9 张"],
+  "photo_urls":          ["string, source_type=MANUAL 时必填, OSS 白名单 URL, 最多 9 张"],
   "device_fingerprint":  "string, 匿名必填（HC-06）",
   "request_time":        "string, 必填, ISO-8601",
   "tag_only":            "boolean, 可选, 默认 false, 仅发现标识未见到患者（FR-CLUE-004）"
@@ -935,7 +938,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_007",
   "data": {
@@ -1014,7 +1017,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_008",
   "data": {
@@ -1065,7 +1068,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_009",
   "data": {
@@ -1111,7 +1114,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_010",
   "data": {
@@ -1147,7 +1150,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 **描述**：查询指定任务关联的患者轨迹点列表（FR-CLUE-006, LLD §4 `patient_trajectory`）。
 
-**HTTP 请求**：`GET /api/v1/rescue/tasks/{task_id}/trajectory`
+**HTTP 请求**：`GET /api/v1/rescue/tasks/{task_id}/trajectory/latest`
 
 **安全性**：需鉴权（JWT）
 
@@ -1169,7 +1172,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_011",
   "data": {
@@ -1224,13 +1227,14 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 | 8 | POST | `/api/v1/patients/{patient_id}/guardians/primary-transfer` | 发起主监护转移 | JWT |
 | 9 | POST | `/api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/respond` | 响应主监护转移 | JWT |
 | 10 | POST | `/api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/cancel` | 撤销主监护转移 | JWT |
-| 11 | GET | `/api/v1/patients/{patient_id}` | 查询患者档案 | JWT |
-| 12 | GET | `/api/v1/patients` | 患者列表查询 | JWT |
-| 13 | DELETE | `/api/v1/patients/{patient_id}` | 逻辑删除患者档案 | JWT |
+| 11 | DELETE | `/api/v1/patients/{patient_id}/guardians/{user_id}` | 移除监护成员 | JWT |
+| 12 | GET | `/api/v1/patients/{patient_id}` | 查询患者档案 | JWT |
+| 13 | GET | `/api/v1/patients` | 患者列表查询 | JWT |
+| 14 | DELETE | `/api/v1/patients/{patient_id}` | 逻辑删除患者档案 | JWT |
 
 ---
 
-#### 3.3.1 创建患者档案
+#### 3.3.1 创建患者档案 
 
 **描述**：当前用户为患者创建档案，自动成为主监护人（FR-PRO-001, LLD §5.3.1）。
 
@@ -1281,7 +1285,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_012",
   "data": {
@@ -1351,7 +1355,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_013",
   "data": {
@@ -1405,7 +1409,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_014",
   "data": {
@@ -1457,7 +1461,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_015",
   "data": {
@@ -1511,7 +1515,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_016",
   "data": {
@@ -1565,7 +1569,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_017",
   "data": {
@@ -1620,7 +1624,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_018",
   "data": {
@@ -1671,7 +1675,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_019",
   "data": {
@@ -1734,7 +1738,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_020",
   "data": {
@@ -1785,13 +1789,13 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_021",
   "data": {
     "transfer_request_id": "4001",
-    "status":       "CANCELLED",
-    "cancelled_at": "2026-04-19T09:30:00Z"
+    "status":       "REVOKED",
+    "revoked_at": "2026-04-19T09:30:00Z"
   }
 }
 ```
@@ -1806,7 +1810,55 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ---
 
-#### 3.3.11 查询患者档案
+#### 3.3.11 移除监护成员
+
+**描述**：主监护人将指定家属从患者的监护成员列表中移除（FR-PRO-006, BR-006）。移除时，该成员所有 `PENDING_CONFIRM` 状态的转移请求必须同事务失效。
+
+**HTTP 请求**：`DELETE /api/v1/patients/{patient_id}/guardians/{user_id}`
+
+**安全性**：需鉴权（JWT），角色 `PRIMARY_GUARDIAN`
+
+**Path Variables**：
+
+| 字段名 | 类型 | 必填 | 描述 |
+| :--- | :--- | :---: | :--- |
+| `patient_id` | string | 是 | 目标患者 ID |
+| `user_id` | string | 是 | 待移除的监护成员 ID |
+
+**Headers**：
+
+| 字段名 | 类型 | 必填 | 描述 |
+| :--- | :--- | :---: | :--- |
+| `Authorization` | string | 是 | `Bearer {token}` |
+| `X-Request-Id` | string | 是 | 幂等键（HC-03） |
+| `X-Trace-Id` | string | 是 | 链路追踪（HC-04） |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_022",
+  "data": {
+    "patient_id": "1001",
+    "removed_user_id": "2003",
+    "invalidated_transfer_requests": 1
+  }
+}
+```
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_PRO_4046` | 404 | 监护关系不存在 |
+| `E_PRO_4035` | 403 | 非主监护人 |
+| `E_PRO_4099` | 409 | 不可移除自身（主监护人） |
+
+---
+
+#### 3.3.12 查询患者档案
 
 **描述**：查询单个患者的完整档案信息（含监护人列表、围栏配置等）。
 
@@ -1824,7 +1876,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_022",
   "data": {
@@ -1888,7 +1940,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ---
 
-#### 3.3.12 患者列表查询
+#### 3.3.13 患者列表查询
 
 **描述**：查询当前用户名下的患者列表。
 
@@ -1908,7 +1960,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_023",
   "data": {
@@ -1936,7 +1988,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ---
 
-#### 3.3.13 逻辑删除患者档案
+#### 3.3.14 逻辑删除患者档案
 
 **描述**：主监护人逻辑删除患者档案。触发级联清理：AI 会话、向量、记忆笔记物理删除（FR-PRO-009, LLD §5.4.5）。
 
@@ -1962,7 +2014,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_024",
   "data": {
@@ -2047,7 +2099,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_025",
   "data": {
@@ -2108,13 +2160,13 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_026",
   "data": {
     "order_id":    "6001",
     "order_no":    "ORD20260419001",
-    "status":      "APPROVED",
+    "status":      "PENDING_SHIP",
     "reviewed_at": "2026-04-19T10:00:00Z",
     "reviewer_user_id": "9001"
   }
@@ -2162,20 +2214,20 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 2. 校验每个标签状态为 `UNBOUND`。
 3. 标签状态流转 `UNBOUND → ALLOCATED`。
 4. 为每个标签生成 `resource_token`（AES-256-GCM 加密）。
-5. 工单状态 → `SHIPPING`。
-6. Outbox 发布 `order.shipped`。
+5. 工单状态 → `SHIPPED`。
+6. Outbox 发布 `material.order.shipped`。
 
 **Response (HTTP 200)**：
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_027",
   "data": {
     "order_id":   "6001",
     "order_no":   "ORD20260419001",
-    "status":     "SHIPPING",
+    "status":     "SHIPPED",
     "shipped_at": "2026-04-19T14:00:00Z",
     "tags": [
       {
@@ -2193,7 +2245,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 | 错误码 | HTTP | 触发条件 |
 | :--- | :---: | :--- |
 | `E_MAT_4041` | 404 | 工单不存在 |
-| `E_MAT_4091` | 409 | 工单状态非 `APPROVED` |
+| `E_MAT_4091` | 409 | 工单状态非 `PENDING_SHIP` |
 | `E_MAT_4221` | 422 | 标签数量与工单不匹配 |
 | `E_MAT_4222` | 422 | 标签不可用（非 `UNBOUND`） |
 | `E_MAT_4044` | 404 | 标签编码不存在 |
@@ -2226,7 +2278,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_028",
   "data": {
@@ -2243,7 +2295,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 | 错误码 | HTTP | 触发条件 |
 | :--- | :---: | :--- |
 | `E_MAT_4041` | 404 | 工单不存在 |
-| `E_MAT_4091` | 409 | 工单状态非 `SHIPPING` |
+| `E_MAT_4091` | 409 | 工单状态非 `SHIPPED` |
 | `E_MAT_4030` | 403 | 非申领人 |
 
 ---
@@ -2275,7 +2327,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_029",
   "data": {
@@ -2331,7 +2383,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_030",
   "data": {
@@ -2380,14 +2432,14 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 1. 标签状态 `SUSPECTED_LOST → LOST`。
 2. 使 `resource_token` 失效（按 `kid` 撤销）。
-3. Outbox 发布 `tag.lost.confirmed`。
+3. Outbox 发布 `tag.loss.confirmed`。
 4. 通知主监护人（`tag.suspected_lost` 通知路由）。
 
 **Response (HTTP 200)**：
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_031",
   "data": {
@@ -2439,7 +2491,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "任务已提交",
   "trace_id": "trc_20260419_032",
   "data": {
@@ -2478,7 +2530,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_033",
   "data": {
@@ -2508,7 +2560,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_034",
   "data": {
@@ -2560,7 +2612,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_035",
   "data": {
@@ -2571,7 +2623,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
         "patient_id": "1001",
         "tag_type":   "QR_CODE",
         "quantity":   2,
-        "status":     "SHIPPING",
+        "status":     "SHIPPED",
         "created_at": "2026-04-19T09:00:00Z",
         "shipped_at": "2026-04-19T14:00:00Z"
       }
@@ -2636,7 +2688,7 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_036",
   "data": {
@@ -2826,7 +2878,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_037",
   "data": {
@@ -2880,7 +2932,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_038",
   "data": {
@@ -2923,7 +2975,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_039",
   "data": {
@@ -3009,7 +3061,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_040",
   "data": {
@@ -3054,7 +3106,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_041",
   "data": {
@@ -3100,7 +3152,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_042",
   "data": {
@@ -3140,7 +3192,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "如果该邮箱已注册，将收到重置链接",
   "trace_id": "trc_20260419_043",
   "data": null
@@ -3174,7 +3226,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "密码已重置",
   "trace_id": "trc_20260419_044",
   "data": null
@@ -3202,7 +3254,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_045",
   "data": {
@@ -3246,7 +3298,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "密码已更新",
   "trace_id": "trc_20260419_046",
   "data": null
@@ -3291,7 +3343,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_047",
   "data": {
@@ -3329,7 +3381,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_048",
   "data": {
@@ -3374,7 +3426,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_049",
   "data": {
@@ -3426,7 +3478,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_050",
   "data": {
@@ -3471,7 +3523,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_051",
   "data": {
@@ -3532,7 +3584,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_052",
   "data": {
@@ -3576,7 +3628,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_053",
   "data": {
@@ -3628,7 +3680,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_054",
   "data": {
@@ -3674,7 +3726,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
   "message": "success",
   "trace_id": "trc_20260419_055",
   "data": {
@@ -3737,20 +3789,31 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 **WebSocket 端点**：`wss://{host}/ws?ticket={ws_ticket}`
 
-**获取 Ticket**：
+#### 4.1.1 获取 WebSocket Ticket
 
-客户端需先通过 HTTP 接口获取一次性 WebSocket Ticket：
+**描述**：客户端通过已鉴权的 HTTP 请求获取一次性 WebSocket Ticket，用于后续 WebSocket 连接建立（LLD §11.1）。
 
-```
-POST /api/v1/ws/ticket
-Authorization: Bearer {access_token}
-```
+**HTTP 请求**：`POST /api/v1/ws/ticket`
 
-Response：
+**安全性**：需鉴权（JWT）
+
+**Headers**：
+
+| 字段名 | 类型 | 必填 | 描述 |
+| :--- | :--- | :---: | :--- |
+| `Authorization` | string | 是 | `Bearer {token}` |
+| `X-Request-Id` | string | 是 | 幂等键（HC-03） |
+| `X-Trace-Id` | string | 是 | 链路追踪（HC-04） |
+
+**Request Body**：无
+
+**Response (HTTP 200)**：
 
 ```json
 {
-  "code": "OK",
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_050",
   "data": {
     "ws_ticket": "wst_xxx_onetime",
     "expires_in": 30
@@ -3759,6 +3822,14 @@ Response：
 ```
 
 > Ticket 一次性消费，TTL = 30s。
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_GOV_4010` | 401 | 未登录或 JWT 无效 |
+| `E_GOV_4012` | 401 | `ws_ticket` 生成频率超限 |
+| `E_GOV_4291` | 429 | 请求频率过高 |
 
 ### 4.2 心跳机制
 
@@ -4159,11 +4230,46 @@ Response：
 
 ### 5.5 MAT 域事件
 
-#### 5.5.1 order.shipped
+#### 5.5.1 material.order.created
 
 ```json
 {
-  "event_type":  "order.shipped",
+  "event_type":  "material.order.created",
+  "event_id":    "evt_01H...",
+  "trace_id":    "trc_xxx",
+  "occurred_at": "2026-04-19T09:00:00Z",
+  "payload": {
+    "order_id":   "6001",
+    "order_no":   "ORD20260419001",
+    "patient_id": "1001",
+    "applicant_user_id": "2001",
+    "quantity":   2
+  }
+}
+```
+
+#### 5.5.2 material.order.approved
+
+```json
+{
+  "event_type":  "material.order.approved",
+  "event_id":    "evt_01H...",
+  "trace_id":    "trc_xxx",
+  "occurred_at": "2026-04-19T10:00:00Z",
+  "payload": {
+    "order_id":   "6001",
+    "order_no":   "ORD20260419001",
+    "patient_id": "1001",
+    "reviewer_user_id": "9001"
+  }
+}
+```
+
+#### 5.5.3 material.order.shipped
+
+```json
+{
+  "event_type":  "material.order.shipped",
   "event_id":    "evt_01H...",
   "trace_id":    "trc_xxx",
   "occurred_at": "2026-04-19T14:00:00Z",
@@ -4176,7 +4282,24 @@ Response：
 }
 ```
 
-#### 5.5.2 tag.bound
+#### 5.5.4 tag.allocated
+
+```json
+{
+  "event_type":  "tag.allocated",
+  "event_id":    "evt_01H...",
+  "trace_id":    "trc_xxx",
+  "occurred_at": "2026-04-19T14:00:00Z",
+  "payload": {
+    "tag_code":   "TAG20260419001",
+    "order_id":   "6001",
+    "patient_id": "1001",
+    "resource_token_generated": true
+  }
+}
+```
+
+#### 5.5.5 tag.bound
 
 ```json
 {
@@ -4192,11 +4315,11 @@ Response：
 }
 ```
 
-#### 5.5.3 tag.lost.confirmed
+#### 5.5.6 tag.loss.confirmed
 
 ```json
 {
-  "event_type":  "tag.lost.confirmed",
+  "event_type":  "tag.loss.confirmed",
   "event_id":    "evt_01H...",
   "trace_id":    "trc_xxx",
   "occurred_at": "2026-04-19T18:00:00Z",
@@ -4252,12 +4375,12 @@ Response：
 | 函数名 | 执行等级 | 对应 API | 说明 |
 | :--- | :---: | :--- | :--- |
 | `query_task_snapshot` | A0 | `GET /api/v1/rescue/tasks/{id}/snapshot` | 查询任务快照 |
-| `query_trajectory` | A0 | `GET /api/v1/rescue/tasks/{id}/trajectory` | 查询轨迹 |
+| `query_trajectory` | A0 | `GET /api/v1/rescue/tasks/{id}/trajectory/latest` | 查询轨迹 |
 | `query_clues` | A0 | `GET /api/v1/clues` | 查询线索列表 |
 | `query_patient_profile` | A0 | `GET /api/v1/patients/{id}` | 查询患者档案 |
 | `create_task` | A2 | `POST /api/v1/rescue/tasks` | 发布任务 |
 | `close_task` | A2 | `POST /api/v1/rescue/tasks/{id}/close` | 关闭任务 |
-| `update_appearance` | A1 | `PUT /api/v1/patients/{id}/appearance` | 更新外观 |
+| `update_daily_appearance` | A2 | `PUT /api/v1/patients/{id}/appearance` | 当日着装为最高视觉锚点 |
 | `generate_poster` | A1 | `POST /api/v1/ai/poster` | 生成海报 |
 | `sustained_task` | A2 | `POST /api/v1/rescue/tasks/{id}/sustained` | 标记长期维持 |
 | `confirm_missing` | A3 | `POST /api/v1/patients/{id}/missing-pending/confirm` | 确认走失 |
@@ -4287,7 +4410,7 @@ Response：
 | §4 CLUE | FR-CLUE-007 | `POST /api/v1/clues/{id}/override` | §3.2.4 | P0 |
 | §4 CLUE | FR-CLUE-007 | `POST /api/v1/clues/{id}/reject` | §3.2.5 | P0 |
 | §4 CLUE | — | `GET /api/v1/clues` | §3.2.6 | P1 |
-| §4 CLUE | FR-CLUE-006 | `GET /api/v1/rescue/tasks/{id}/trajectory` | §3.2.7 | P0 |
+| §4 CLUE | FR-CLUE-006 | `GET /api/v1/rescue/tasks/{id}/trajectory/latest` | §3.2.7 | P0 |
 | §5 PROFILE | FR-PRO-001 | `POST /api/v1/patients` | §3.3.1 | P0 |
 | §5 PROFILE | FR-PRO-001 | `PUT /api/v1/patients/{id}/profile` | §3.3.2 | P0 |
 | §5 PROFILE | FR-TASK-003 | `PUT /api/v1/patients/{id}/appearance` | §3.3.3 | P0 |
@@ -4298,9 +4421,10 @@ Response：
 | §5 PROFILE | FR-PRO-007 | `POST /api/v1/patients/{id}/guardians/primary-transfer` | §3.3.8 | P0 |
 | §5 PROFILE | FR-PRO-007 | `POST .../primary-transfer/{id}/respond` | §3.3.9 | P0 |
 | §5 PROFILE | FR-PRO-007 | `POST .../primary-transfer/{id}/cancel` | §3.3.10 | P0 |
-| §5 PROFILE | — | `GET /api/v1/patients/{id}` | §3.3.11 | P0 |
-| §5 PROFILE | — | `GET /api/v1/patients` | §3.3.12 | P1 |
-| §5 PROFILE | FR-PRO-009 | `DELETE /api/v1/patients/{id}` | §3.3.13 | P0 |
+| §5 PROFILE | FR-PRO-006 | `DELETE /api/v1/patients/{id}/guardians/{user_id}` | §3.3.11 | P0 |
+| §5 PROFILE | — | `GET /api/v1/patients/{id}` | §3.3.12 | P0 |
+| §5 PROFILE | — | `GET /api/v1/patients` | §3.3.13 | P1 |
+| §5 PROFILE | FR-PRO-009 | `DELETE /api/v1/patients/{id}` | §3.3.14 | P0 |
 | §6 MAT | FR-MAT-001 | `POST /api/v1/material/orders` | §3.4.1 | P0 |
 | §6 MAT | FR-MAT-001 | `POST .../orders/{id}/approve` | §3.4.2 | P0 |
 | §6 MAT | FR-MAT-002 | `POST .../orders/{id}/ship` | §3.4.3 | P0 |

@@ -331,7 +331,7 @@ router.beforeEach((to, _from, next) => {
 
 ### 6.3 强制禁止持久化项
 
-1. 禁止存储 `entry_token`、`manual_entry_token`、`pin_code`、`captcha_token`。
+1. 禁止存储 `entry_token`、`manual_entry_token`、`captcha_token`。
 2. 禁止在客户端日志中输出完整 `resource_token` 与患者标识。
 3. 禁止长期缓存精确定位历史；仅保留当前上报必需坐标。
 
@@ -404,7 +404,7 @@ router.beforeEach((to, _from, next) => {
 
 ### 8.3 PUB-02 手动录入页
 
-1. 字段：`short_code`、`pin_code`、`captcha_token`、`device_fingerprint`。
+1. 字段：`short_code`、`captcha_token`、`device_fingerprint`。
 2. 提交成功后不展示 `manual_entry_token`，只执行“继续上报”路由。
 3. 命中 `429` 时记录 `Retry-After`，禁用提交并显示倒计时。
 
@@ -455,7 +455,6 @@ router.beforeEach((to, _from, next) => {
 | 字段 | 控件 | 必填 | 校验规则 | 失败断言 |
 | :--- | :--- | :---: | :--- | :--- |
 | `short_code` | 文本输入 | 是 | `^[A-Z0-9]{6}$` | `HTTP 400 + E_CLUE_4005` |
-| `pin_code` | 密码输入 | 是 | 固定 6 位数字 | `HTTP 400 + E_CLUE_4006` |
 | `captcha_token` | 人机校验组件 | 是 | 必须存在且未过期 | `HTTP 403 + E_GOV_4038` |
 | `device_fingerprint` | 隐式采集 | 是 | 长度 16-128 | `HTTP 400 + E_GOV_4004` |
 | 提交按钮 | 主操作按钮 | - | 冷却中禁用 | `HTTP 429 + E_GOV_4291/E_GOV_4292` |
@@ -551,7 +550,6 @@ export type ApiEnvelope<T> = {
 
 export type ManualEntryRequest = {
   short_code: string;
-  pin_code: string;
   captcha_token: string;
   device_fingerprint: string;
 };
@@ -601,7 +599,7 @@ export type ClueReportResponse = {
 ### 13.2 日志脱敏规则
 
 1. `resource_token`、`short_code` 仅记录哈希或掩码值。
-2. 不记录 `pin_code`、`entry_token`、精确经纬度原值。
+2. 不记录 `entry_token`、精确经纬度原值。
 3. 任何异常日志必须附带 `trace_id` 与页面 ID。
 
 ## 14. 测试与质量门禁

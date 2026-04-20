@@ -96,7 +96,7 @@ NotificationPort（出口接口）
 | clue-trajectory-service | CLUE 域（轨迹） | `patient_trajectory` | 轨迹聚合、窗口归档、终态 Flush | `track.updated`（聚合后） | `clue.validated`、`task.closed.found`、`task.closed.false_alarm` |
 | ai-orchestrator-service | AI 域 | `ai_session`、配额账本 | AI Agent 自然语言交互、Function Calling 编排（Spring AI Alibaba）、上下文组装、推理、策略事件 | `ai.strategy.generated`、`ai.poster.generated`、`memory.appended`、`memory.expired` | `clue.validated`、`track.updated`、`task.created`、`task.closed.found`、`task.closed.false_alarm`、`task.sustained` |
 | ai-vectorizer-service | AI 域 | `vector_store` | 文本切片、向量写入、失效清理 | — | `profile.created`、`profile.updated`、`profile.deleted.logical`、`memory.appended`、`memory.expired`、`clue.vectorize.requested` |
-| material-service | MAT 域 | `tag_asset`、`tag_apply_record` | 标签主数据、绑定流程、工单流转、发货、异常处置 | `tag.allocated`、`tag.bound`、`tag.loss.confirmed`、`material.order.created`、`material.order.approved` | `tag.suspected_lost`、`profile.deleted.logical` |
+| material-service | MAT 域 | `tag_asset`、`tag_apply_record` | 标签主数据、绑定流程、工单流转、发货、异常处置 | `tag.allocated`、`tag.bound`、`tag.loss.confirmed`、`material.order.created`、`material.order.approved`、`material.order.shipped` | `tag.suspected_lost`、`profile.deleted.logical` |
 | notify-service | GOV 域（通知子能力） | `notification_inbox` | 事件消费、模板组装、多渠道分发（经 `NotificationPort`） | `notification.sent` | `task.created`、`task.closed.found`、`task.closed.false_alarm`、`task.sustained`、`fence.breached`、`patient.missing_pending`、`patient.confirmed_safe`、`clue.validated`、`track.updated`、`tag.suspected_lost` |
 | ws-gateway-service | GOV 域（通知子能力） | Redis 路由态 | WebSocket 长连接、路由注册、点对点下发 | — | Redis Pub/Sub `ws.push.{pod_id}` |
 | admin-review-service | GOV 域（审计子能力） | `clue_record` 审核字段 | 线索复核（override/reject）、治理审计 | `clue.overridden`、`clue.rejected` | `clue.suspected` |
@@ -2653,6 +2653,23 @@ EXCEPTION HANDLING:
   "payload": {
     "order_id":  7001,
     "audit_by":  3001
+  }
+}
+```
+
+#### 6.5.6 material.order.shipped
+
+```json
+{
+  "event_type":  "material.order.shipped",
+  "event_id":    "evt_01H...",
+  "trace_id":    "trc_xxx",
+  "occurred_at": "2026-04-19T14:00:00Z",
+  "payload": {
+    "order_id":   7001,
+    "order_no":   "ORD20260419001",
+    "patient_id": 1001,
+    "tag_codes":  ["TAG20260419001", "TAG20260419002"]
   }
 }
 ```

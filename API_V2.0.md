@@ -4372,18 +4372,31 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ### 6.2 Function Calling 白名单
 
+**家属侧可调用操作**：
+
 | 函数名 | 执行等级 | 对应 API | 说明 |
 | :--- | :---: | :--- | :--- |
 | `query_task_snapshot` | A0 | `GET /api/v1/rescue/tasks/{id}/snapshot` | 查询任务快照 |
 | `query_trajectory` | A0 | `GET /api/v1/rescue/tasks/{id}/trajectory/latest` | 查询轨迹 |
 | `query_clues` | A0 | `GET /api/v1/clues` | 查询线索列表 |
 | `query_patient_profile` | A0 | `GET /api/v1/patients/{id}` | 查询患者档案 |
+| `generate_poster` | A1 | `POST /api/v1/ai/poster` | 输出 JSON 文案，经敏感词过滤 |
 | `create_task` | A2 | `POST /api/v1/rescue/tasks` | 发布任务 |
-| `close_task` | A2 | `POST /api/v1/rescue/tasks/{id}/close` | 关闭任务 |
+| `submit_material_order` | A2 | `POST /api/v1/material/orders` | AI 辅助填写收货地址，家属确认 |
+| `report_tag_lost` | A2 | `POST /api/v1/tags/{tag_code}/loss/confirm` | 列出绑定标签供家属勾选 |
+| `update_fence_config` | A2 | `PUT /api/v1/patients/{id}/fence` | 严禁 AI 直接关闭围栏 |
 | `update_daily_appearance` | A2 | `PUT /api/v1/patients/{id}/appearance` | 当日着装为最高视觉锚点 |
-| `generate_poster` | A1 | `POST /api/v1/ai/poster` | 生成海报 |
+| `update_patient_profile` | A2 | `PUT /api/v1/patients/{id}/profile` | 长期 RAG 素材，需家属确认 |
 | `sustained_task` | A2 | `POST /api/v1/rescue/tasks/{id}/sustained` | 标记长期维持 |
+| `propose_close_found` | A3 | `POST /api/v1/rescue/tasks/{id}/close` | 极高风险，必须物理点击确认 |
 | `confirm_missing` | A3 | `POST /api/v1/patients/{id}/missing-pending/confirm` | 确认走失 |
+
+**管理侧可调用操作**：
+
+| 函数名 | 执行等级 | 对应 API | 说明 |
+| :--- | :---: | :--- | :--- |
+| `approve_material_order` | A2 | `POST /api/v1/material/orders/{id}/approve` | 审核通过 |
+| `replay_outbox_dead` | A3 | `POST /api/v1/admin/super/outbox/dead/{id}/replay` | DEAD 事件受控重放 |
 
 ### 6.3 Policy Guard 校验链
 

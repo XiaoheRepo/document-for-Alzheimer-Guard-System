@@ -572,6 +572,7 @@ graph LR
 | `tag.loss.confirmed` | MAT 域 | — | 主监护人确认标签丢失 | 是 |
 | `material.order.created` | MAT 域 | 管理端处理器 | 物资申领工单创建 | 是 |
 | `material.order.approved` | MAT 域 | 管理端处理器 | 申领审核通过 | 是 |
+| `material.order.shipped` | MAT 域 | — | 发货出库，标签状态 `UNBOUND → ALLOCATED` | 是 |
 
 #### 5.2.5 AI 域事件
 
@@ -766,7 +767,7 @@ sequenceDiagram
 | `create_rescue_task` | `POST /api/v1/rescue/tasks` | A2 (`CONFIRM_1`) | 家属确认后执行；引导补录当日着装（FR-TASK-003） | §5.3 任务启停 |
 | `propose_close_found` | `POST /api/v1/rescue/tasks/{task_id}/close` | A3 (`CONFIRM_2`) | **极高风险**，必须物理点击确认并填写寻回地点备注 | §5.3 任务启停 |
 | `submit_material_order` | `POST /api/v1/material/orders` | A2 (`CONFIRM_1`) | AI 辅助填写收货地址，家属确认 | §5.3 标签申领 |
-| `report_tag_lost` | `POST /api/v1/tags/{tag_id}/report-lost` | A2 (`CONFIRM_1`) | 列出绑定标签供家属勾选 | §5.3 主动挂失 |
+| `report_tag_lost` | `POST /api/v1/tags/{tag_code}/loss/confirm` | A2 (`CONFIRM_1`) | 列出绑定标签供家属勾选 | §5.3 主动挂失 |
 | `update_fence_config` | `PUT /api/v1/patients/{patient_id}/fence` | A2 (`CONFIRM_1`) | 严禁 AI 直接关闭围栏 | §5.3 电子围栏 |
 | `update_daily_appearance` | `PUT /api/v1/patients/{patient_id}/appearance` | A2 (`CONFIRM_1`) | 当日着装为最高视觉锚点 | §5.3 档案管理 |
 | `update_patient_profile` | `PUT /api/v1/patients/{patient_id}/profile` | A2 (`CONFIRM_1`) | 长期 RAG 素材，需家属确认 | §5.3 档案管理 |
@@ -782,7 +783,7 @@ sequenceDiagram
 | :--- | :--- | :--- | :--- | :--- |
 | `clue_override` | `POST /api/v1/clues/{clue_id}/override` | `CONFIRM_2` | 管理员复核通过 | FR-CLUE-007 |
 | `clue_reject` | `POST /api/v1/clues/{clue_id}/reject` | `CONFIRM_2` | 管理员驳回 | FR-CLUE-007 |
-| `approve_material_order` | `PUT /api/v1/admin/material/orders/{order_id}/approve` | `CONFIRM_2` | 审核通过 | FR-MAT-001 |
+| `approve_material_order` | `POST /api/v1/material/orders/{order_id}/approve` | `CONFIRM_2` | 审核通过 | FR-MAT-001 |
 | `force_close_task` | `POST /api/v1/admin/super/rescue/tasks/{task_id}/force-close` | `MANUAL_ONLY` | A4 动作，仅人工页面可执行 | ADR-005 |
 | `replay_outbox_dead` | `POST /api/v1/admin/super/outbox/dead/{event_id}/replay` | `CONFIRM_3` | DEAD 事件受控重放 | — |
 

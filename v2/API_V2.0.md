@@ -373,8 +373,20 @@
 | `E_USR_4001` | 400 | 新旧密码不能相同 |
 | `E_USR_4002` | 400 | 新密码不满足强度策略 |
 | `E_USR_4003` | 400 | `status` 枚举非法（仅支持 `ACTIVE` / `DISABLED`） |
+| `E_USR_4004` | 400 | `role` 枚举非法（仅支持 `FAMILY` / `ADMIN` / `SUPER_ADMIN`） |
+| `E_USR_4005` | 400 | `email` / `phone` / `nickname` 格式非法 |
 | `E_USR_4011` | 401 | `old_password` 校验失败 |
+| `E_USR_4032` | 403 | 普通管理员禁止操作非 `FAMILY` 账号 |
+| `E_USR_4033` | 403 | 禁止操作 `SUPER_ADMIN` 账号（不可禁用 / 删除 / 降级） |
+| `E_USR_4034` | 403 | 禁止操作自身账号（自禁 / 自删 / 自降级） |
+| `E_USR_4035` | 403 | 角色变更仅 `SUPER_ADMIN` 可执行 |
 | `E_USR_4041` | 404 | `user_id` 不存在 |
+| `E_USR_4091` | 409 | 用户当前状态不允许该操作（如已 `DEACTIVATED` 再禁用） |
+| `E_USR_4092` | 409 | 该用户仍持有主监护关系，禁止删除；请先转移主监护 |
+| `E_USR_4093` | 409 | 该用户仍有未终态工单或任务，禁止删除 |
+| `E_PRO_4035` | 403 | 管理员强制转移目标用户非 `FAMILY` 或非 `ACTIVE` |
+| `E_PRO_4036` | 403 | 管理员只读访问受限（无全局患者查阅权限） |
+| `E_PRO_4046` | 404 | `force-transfer` 目标 `target_user_id` 不存在 |
 
 ### 2.8 通知域（GOV 子能力）
 
@@ -1231,6 +1243,9 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 | 12 | GET | `/api/v1/patients/{patient_id}` | 查询患者档案 | JWT |
 | 13 | GET | `/api/v1/patients` | 患者列表查询 | JWT |
 | 14 | DELETE | `/api/v1/patients/{patient_id}` | 逻辑删除患者档案 | JWT |
+| 15 | GET | `/api/v1/admin/patients` | 管理员全局患者档案列表 | JWT(ADMIN) |
+| 16 | GET | `/api/v1/admin/patients/{patient_id}` | 管理员查看患者档案详情 | JWT(ADMIN) |
+| 17 | POST | `/api/v1/admin/patients/{patient_id}/guardians/force-transfer` | 管理员强制转移主监护权 | JWT(SUPER_ADMIN) |
 
 ---
 
@@ -2033,6 +2048,197 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 | `E_PRO_4092` | 409 | 患者有非终态任务，禁止删除 |
 
 **Outbox 事件**：`profile.deleted.logical`（触发 AI 域物理清理向量、会话、记忆）
+
+---
+
+#### 3.3.15 管理员全局患者档案列表
+
+**描述**：管理员跨监护关系查询全局患者档案，用于运营治理与协查（FR-PRO-011，LLD V2.0 §5.3.8）。**仅只读**，不得变更档案。
+
+**HTTP 请求**：`GET /api/v1/admin/patients`
+
+**安全性**：需鉴权（JWT），角色 `ADMIN` 或 `SUPER_ADMIN`
+
+**Query Parameters**：
+
+| 字段名 | 类型 | 必填 | 默认值 | 描述 |
+| :--- | :--- | :---: | :--- | :--- |
+| `keyword` | string | 否 | — | 模糊匹配 `patient_name` / `short_code` / `profile_no` |
+| `status` | string | 否 | — | `NORMAL` / `MISSING_PENDING` / `MISSING` |
+| `gender` | string | 否 | — | `MALE` / `FEMALE` / `UNKNOWN` |
+| `primary_guardian_user_id` | string | 否 | — | 按主监护人过滤 |
+| `cursor` | string | 否 | — | 分页游标 |
+| `page_size` | int | 否 | `20` | 每页（≤ 100） |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_060",
+  "data": {
+    "items": [
+      {
+        "patient_id":   "1001",
+        "profile_no":   "PRO20260419001",
+        "short_code":   "A3B7K9",
+        "patient_name": "李**",
+        "gender":       "FEMALE",
+        "age":          78,
+        "status":       "NORMAL",
+        "primary_guardian": {
+          "user_id":  "2001",
+          "nickname": "张**",
+          "phone":    "138****5678"
+        },
+        "guardian_count": 3,
+        "active_task_id": null,
+        "created_at":     "2026-04-01T08:00:00Z"
+      }
+    ],
+    "page_size":   20,
+    "next_cursor": "eyJpZCI6MTAwMX0=",
+    "has_next":    true
+  }
+}
+```
+
+**处理逻辑与合规要求**：
+
+1. 响应字段默认脱敏：`patient_name` / 监护人 `nickname` / `phone` / `email` 均走 `@Desensitize`（HC-07）。
+2. `admin` 与 `super_admin` 同表可见；不区分监护关系。
+3. 查询行为写入 `sys_log`，`risk_level=MEDIUM`，`action=admin.patient.list`。
+4. 禁止导出原始明文（导出接口独立，另行评审）。
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_AUTH_4031` | 403 | 非 `ADMIN` / `SUPER_ADMIN` |
+| `E_REQ_4002` | 400 | `status` / `gender` 枚举非法 |
+
+---
+
+#### 3.3.16 管理员查看患者档案详情
+
+**描述**：管理员查看单个患者档案详情（只读）。字段与 `GET /api/v1/patients/{patient_id}` 一致，但不走监护关系校验；响应中追加 `guardian_list`（所有 `ACTIVE` 监护成员）。
+
+**HTTP 请求**：`GET /api/v1/admin/patients/{patient_id}`
+
+**安全性**：需鉴权（JWT），角色 `ADMIN` 或 `SUPER_ADMIN`
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_061",
+  "data": {
+    "patient_id":   "1001",
+    "profile_no":   "PRO20260419001",
+    "short_code":   "A3B7K9",
+    "patient_name": "李**",
+    "gender":       "FEMALE",
+    "birthday":     "1947-08-12",
+    "status":       "NORMAL",
+    "avatar_url":   "https://oss.example.com/avatar/p1001.jpg",
+    "chronic_diseases": "…",
+    "medication":       "…",
+    "allergy":          "…",
+    "appearance": { "height_cm": 160, "weight_kg": 52, "clothing": "…", "features": "…" },
+    "fence": { "enabled": true, "center_lat": 30.12, "center_lng": 120.34, "radius_m": 500 },
+    "guardian_list": [
+      { "user_id": "2001", "relation_role": "PRIMARY_GUARDIAN", "nickname": "张**", "relation_status": "ACTIVE" },
+      { "user_id": "2002", "relation_role": "GUARDIAN",         "nickname": "张**", "relation_status": "ACTIVE" }
+    ],
+    "active_task_id":   null,
+    "last_track_at":    "2026-04-19T09:00:00Z",
+    "profile_version":  7,
+    "created_at":       "2026-04-01T08:00:00Z",
+    "updated_at":       "2026-04-15T10:00:00Z"
+  }
+}
+```
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_PRO_4041` | 404 | 患者不存在 |
+| `E_AUTH_4031` | 403 | 非 `ADMIN` / `SUPER_ADMIN` |
+
+**审计**：`sys_log` 记录 `action=admin.patient.read`，`risk_level=MEDIUM`，`object_id=patient_id`。
+
+---
+
+#### 3.3.17 管理员强制转移主监护权
+
+**描述**：当原主监护人账号异常（失联 / 禁用 / 注销）且新监护人因无法取得原主确认而无法走 §3.3.8 / §3.3.9 双阶段流程时，由 **超级管理员** 行政强制转移主监护权（FR-PRO-012，LLD V2.0 §5.3.9，§5.4.3b）。
+
+**HTTP 请求**：`POST /api/v1/admin/patients/{patient_id}/guardians/force-transfer`
+
+**安全性**：需鉴权（JWT），角色仅 `SUPER_ADMIN`；`CONFIRM_3` 高确认等级（BDD §7 / §12）。
+
+**Headers**：
+
+| 字段名 | 类型 | 必填 | 描述 |
+| :--- | :--- | :---: | :--- |
+| `Authorization` | string | 是 | `Bearer {token}` |
+| `X-Request-Id` | string | 是 | 幂等键 |
+| `X-Trace-Id` | string | 是 | 链路追踪 |
+| `X-Confirm-Level` | string | 是 | 必须为 `CONFIRM_3` |
+
+**Request Body (application/json)**：
+
+```json
+{
+  "target_user_id": "string, 必填, 新主监护人 user_id, 必须为 FAMILY+ACTIVE+该患者现有 ACTIVE 监护成员",
+  "reason":         "string, 必填, 20-256, 行政理由（人工审批单号等）",
+  "evidence_url":   "string, 可选, OSS 审批材料 URL"
+}
+```
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_062",
+  "data": {
+    "patient_id":     "1001",
+    "previous_primary_user_id": "2001",
+    "new_primary_user_id":      "2002",
+    "transferred_at": "2026-04-19T21:00:00Z",
+    "audit_log_id":   "log_2026041921000001"
+  }
+}
+```
+
+**处理逻辑**：
+
+1. 校验 `target_user_id` 为该患者当前 `guardian_relation.relation_status=ACTIVE` 成员；若非成员必须先通过邀请流程。
+2. 事务内：
+   - 原 `PRIMARY_GUARDIAN` → `GUARDIAN`；
+   - 目标成员 → `PRIMARY_GUARDIAN`；
+   - `patient_profile.profile_version += 1`（HC-01 乐观锁）。
+3. 写 `sys_log` `action=admin.patient.force_transfer_primary`，`risk_level=CRITICAL`，`confirm_level=CONFIRM_3`。
+4. 发布事件 `patient.primary_guardian.force_transferred`（payload 含 `previous_primary_user_id` / `new_primary_user_id` / `operator_user_id` / `reason` / `evidence_url`），消费方：通知域 → 通知原主监护 + 新主监护 + 其他 `ACTIVE` 成员。
+5. 被禁用 / 注销的原主监护即使重新激活，也不会自动恢复主监护角色。
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_PRO_4041` | 404 | 患者不存在 |
+| `E_PRO_4046` | 404 | `target_user_id` 不存在 |
+| `E_PRO_4044` | 422 | `target_user_id` 非当前 `ACTIVE` 监护成员 |
+| `E_PRO_4035` | 403 | `target_user_id` 非 `FAMILY` 或非 `ACTIVE` |
+| `E_AUTH_4031` | 403 | 非 `SUPER_ADMIN` 或缺少 `CONFIRM_3` |
+
+**Outbox 事件**：`patient.primary_guardian.force_transferred`。
 
 ---
 
@@ -3028,6 +3234,12 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 | 12 | POST | `/api/v1/notifications/{notification_id}/read` | 标记通知已读 | JWT |
 | 13 | POST | `/api/v1/admin/super/outbox/dead/{event_id}/replay` | DEAD 事件重放 | JWT(SUPER_ADMIN) |
 | 14 | GET | `/api/v1/admin/super/outbox/dead` | DEAD 事件列表 | JWT(SUPER_ADMIN) |
+| 15 | GET | `/api/v1/admin/users` | 用户列表查询 | JWT(ADMIN) |
+| 16 | GET | `/api/v1/admin/users/{user_id}` | 查看用户详情 | JWT(ADMIN) |
+| 17 | PUT | `/api/v1/admin/users/{user_id}` | 修改用户资料 / 角色 | JWT(ADMIN) |
+| 18 | POST | `/api/v1/admin/users/{user_id}/disable` | 禁用用户 | JWT(ADMIN) |
+| 19 | POST | `/api/v1/admin/users/{user_id}/enable` | 启用用户 | JWT(ADMIN) |
+| 20 | DELETE | `/api/v1/admin/users/{user_id}` | 逻辑删除用户 | JWT(ADMIN) |
 
 ---
 
@@ -3651,6 +3863,342 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
   }
 }
 ```
+
+---
+
+#### 3.6.15 用户列表查询
+
+**描述**：管理员分页查询用户列表（FR-GOV-011，LLD V2.0 §8.3.8）。
+
+**HTTP 请求**：`GET /api/v1/admin/users`
+
+**安全性**：需鉴权（JWT），角色 `ADMIN` 或 `SUPER_ADMIN`
+
+**Query Parameters**：
+
+| 字段名 | 类型 | 必填 | 默认值 | 描述 |
+| :--- | :--- | :---: | :--- | :--- |
+| `keyword` | string | 否 | — | 模糊匹配 `username` / `nickname` / `email` / `phone` |
+| `role` | string | 否 | — | `FAMILY` / `ADMIN` / `SUPER_ADMIN`（多值英文逗号） |
+| `status` | string | 否 | — | `ACTIVE` / `DISABLED` / `DEACTIVATED` |
+| `cursor` | string | 否 | — | 分页游标 |
+| `page_size` | int | 否 | `20` | ≤ 100 |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_070",
+  "data": {
+    "items": [
+      {
+        "user_id":        "2001",
+        "username":       "zhangsan",
+        "nickname":       "张三",
+        "email":          "zha****@example.com",
+        "phone":          "138****5678",
+        "role":           "FAMILY",
+        "status":         "ACTIVE",
+        "email_verified": true,
+        "last_login_at":  "2026-04-19T10:00:00Z",
+        "created_at":     "2026-04-01T08:00:00Z"
+      }
+    ],
+    "page_size":   20,
+    "next_cursor": "eyJpZCI6MjAwMX0=",
+    "has_next":    true
+  }
+}
+```
+
+**授权矩阵**（查询结果过滤）：
+
+| 当前角色 | 可见 `role` 集合 |
+| :--- | :--- |
+| `ADMIN` | `FAMILY` 唯一 |
+| `SUPER_ADMIN` | `FAMILY` / `ADMIN` / `SUPER_ADMIN` 全部 |
+
+> **服务端强制过滤**：`ADMIN` 传入 `role=ADMIN|SUPER_ADMIN` 不报错但结果不含；前端按钮级同步隐藏（WAHB P-14）。
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_AUTH_4031` | 403 | 非 `ADMIN` / `SUPER_ADMIN` |
+| `E_REQ_4002` | 400 | `role` / `status` 枚举非法 |
+
+---
+
+#### 3.6.16 查看用户详情
+
+**描述**：管理员查看单个用户详情。
+
+**HTTP 请求**：`GET /api/v1/admin/users/{user_id}`
+
+**安全性**：需鉴权（JWT），角色 `ADMIN` 或 `SUPER_ADMIN`
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_071",
+  "data": {
+    "user_id":        "2001",
+    "username":       "zhangsan",
+    "nickname":       "张三",
+    "email":          "zha****@example.com",
+    "phone":          "138****5678",
+    "role":           "FAMILY",
+    "status":         "ACTIVE",
+    "email_verified": true,
+    "last_login_at":  "2026-04-19T10:00:00Z",
+    "last_login_ip":  "1.2.3.**",
+    "deactivated_at": null,
+    "created_at":     "2026-04-01T08:00:00Z",
+    "updated_at":     "2026-04-15T10:00:00Z",
+    "stats": {
+      "primary_guardian_patient_count": 1,
+      "guardian_patient_count":         2,
+      "pending_material_order_count":   0
+    }
+  }
+}
+```
+
+**授权约束**：
+
+| 当前角色 | 可查看目标 |
+| :--- | :--- |
+| `ADMIN` | 仅目标 `role=FAMILY` |
+| `SUPER_ADMIN` | 任意 |
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_USR_4041` | 404 | 用户不存在 |
+| `E_USR_4032` | 403 | `ADMIN` 访问非 `FAMILY` 账号 |
+| `E_AUTH_4031` | 403 | 非管理员 |
+
+---
+
+#### 3.6.17 修改用户信息
+
+**描述**：管理员修改目标用户资料或角色（FR-GOV-012）。
+
+**HTTP 请求**：`PUT /api/v1/admin/users/{user_id}`
+
+**安全性**：需鉴权（JWT），角色 `ADMIN` 或 `SUPER_ADMIN`
+
+**Request Body (application/json)**：
+
+```json
+{
+  "nickname": "string, 可选, 最大 64",
+  "email":    "string, 可选, 邮箱格式, 最大 128",
+  "phone":    "string, 可选, 手机号",
+  "role":     "string, 可选, FAMILY / ADMIN / SUPER_ADMIN, 仅 SUPER_ADMIN 可传"
+}
+```
+
+**授权矩阵**：
+
+| 当前角色 | 可操作目标 | 可改字段 | 特殊禁令 |
+| :--- | :--- | :--- | :--- |
+| `ADMIN` | 目标 `role=FAMILY` | `nickname` / `email` / `phone` | 不得传 `role` |
+| `SUPER_ADMIN` | 任意 | 全部 | 不得将 `SUPER_ADMIN` 降级；不得修改自身角色 |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_072",
+  "data": {
+    "user_id":    "2001",
+    "updated_at": "2026-04-19T21:30:00Z"
+  }
+}
+```
+
+**处理逻辑**：
+
+1. 校验授权矩阵；
+2. 若修改 `email` 则 `email_verified` 置 `false` 并触发二次验证邮件；
+3. 若修改 `role` 发布事件 `user.role.changed`，通知目标用户并失效其所有现行 JWT（强制重登）；
+4. 写 `sys_log`，`action=admin.user.update`，`risk_level=HIGH`（角色变更为 `CRITICAL`）。
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_USR_4041` | 404 | 目标不存在 |
+| `E_USR_4032` | 403 | `ADMIN` 操作非 `FAMILY` |
+| `E_USR_4033` | 403 | 试图降级 `SUPER_ADMIN` |
+| `E_USR_4034` | 403 | 试图修改自身角色 |
+| `E_USR_4035` | 403 | 非 `SUPER_ADMIN` 传入 `role` |
+| `E_USR_4004` | 400 | `role` 枚举非法 |
+| `E_USR_4005` | 400 | `email` / `phone` / `nickname` 格式非法 |
+
+---
+
+#### 3.6.18 禁用用户
+
+**描述**：管理员禁用目标用户账号，禁用后该账号所有 JWT 失效，无法登录（FR-GOV-013）。
+
+**HTTP 请求**：`POST /api/v1/admin/users/{user_id}/disable`
+
+**安全性**：需鉴权（JWT），角色 `ADMIN` 或 `SUPER_ADMIN`
+
+**Request Body (application/json)**：
+
+```json
+{
+  "reason": "string, 必填, 10-256, 行政理由"
+}
+```
+
+**授权矩阵**：
+
+| 当前角色 | 可操作目标 |
+| :--- | :--- |
+| `ADMIN` | `role=FAMILY` 且非自身 |
+| `SUPER_ADMIN` | `role=FAMILY` / `role=ADMIN` 且非自身；**`SUPER_ADMIN` 永不可禁用** |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_073",
+  "data": {
+    "user_id":     "2001",
+    "status":      "DISABLED",
+    "disabled_at": "2026-04-19T22:00:00Z"
+  }
+}
+```
+
+**处理逻辑**：
+
+1. 若目标已持有任一患者的 `PRIMARY_GUARDIAN` 关系，**不阻断禁用**，但事件 `user.disabled` payload 中列出 `primary_patient_ids`，运营需跟进 §3.3.17 强制转移；
+2. 吊销所有 JWT（Redis 黑名单，TTL = refresh token 剩余）；
+3. 写 `sys_log`，`action=admin.user.disable`，`risk_level=HIGH`，`confirm_level=CONFIRM_2`。
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_USR_4041` | 404 | 用户不存在 |
+| `E_USR_4032` | 403 | `ADMIN` 操作非 `FAMILY` |
+| `E_USR_4033` | 403 | 操作 `SUPER_ADMIN` |
+| `E_USR_4034` | 403 | 操作自身 |
+| `E_USR_4091` | 409 | 用户已 `DISABLED` |
+
+**Outbox 事件**：`user.disabled`。
+
+---
+
+#### 3.6.19 启用用户
+
+**描述**：将 `DISABLED` 用户恢复为 `ACTIVE`。
+
+**HTTP 请求**：`POST /api/v1/admin/users/{user_id}/enable`
+
+**安全性**：授权矩阵同 §3.6.18。
+
+**Request Body (application/json)**：
+
+```json
+{
+  "reason": "string, 可选, 最大 256"
+}
+```
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_074",
+  "data": { "user_id": "2001", "status": "ACTIVE", "enabled_at": "2026-04-19T22:30:00Z" }
+}
+```
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_USR_4041` | 404 | 用户不存在 |
+| `E_USR_4091` | 409 | 用户当前非 `DISABLED` |
+| `E_USR_4032` / `E_USR_4033` / `E_USR_4034` | 403 | 授权不满足 |
+
+**Outbox 事件**：`user.enabled`。
+
+---
+
+#### 3.6.20 逻辑删除用户
+
+**描述**：将用户标记为 `DEACTIVATED`（注销）。与禁用不同，注销是终态不可逆（FR-GOV-014）。
+
+**HTTP 请求**：`DELETE /api/v1/admin/users/{user_id}`
+
+**安全性**：`CONFIRM_3` 高确认等级。
+
+**Headers 扩展**：`X-Confirm-Level: CONFIRM_3` 必填。
+
+**Request Body (application/json)**：
+
+```json
+{ "reason": "string, 必填, 20-256" }
+```
+
+**授权矩阵**：
+
+| 当前角色 | 可操作目标 |
+| :--- | :--- |
+| `ADMIN` | `role=FAMILY` 且非自身 |
+| `SUPER_ADMIN` | `role=FAMILY` / `role=ADMIN` 且非自身；**`SUPER_ADMIN` 永不可删除** |
+
+**前置检查**：
+
+1. 若目标当前为任意患者的 `PRIMARY_GUARDIAN`：返回 `E_USR_4092`；必须先走 §3.3.17 强制转移；
+2. 若目标持有 `PENDING_AUDIT` / `PENDING_SHIP` 物资工单或 `ACTIVE` / `SUSTAINED` 寻回任务：返回 `E_USR_4093`；
+3. 校验通过后事务：
+   - `sys_user.status = DEACTIVATED`；`deactivated_at = now()`；`username`/`email`/`phone` 追加后缀 `#DEL_{timestamp}` 释放唯一约束；
+   - `guardian_relation.relation_status = REVOKED`（非主监护的）；
+   - 吊销所有 JWT；
+   - 写 `sys_log` `risk_level=CRITICAL`，`confirm_level=CONFIRM_3`。
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_075",
+  "data": { "user_id": "2001", "status": "DEACTIVATED", "deactivated_at": "2026-04-19T22:45:00Z" }
+}
+```
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_USR_4041` | 404 | 用户不存在 |
+| `E_USR_4032` / `E_USR_4033` / `E_USR_4034` | 403 | 授权不满足 |
+| `E_USR_4092` | 409 | 仍持有主监护关系 |
+| `E_USR_4093` | 409 | 仍有未终态任务 / 工单 |
+| `E_AUTH_4031` | 403 | 缺少 `CONFIRM_3` |
+
+**Outbox 事件**：`user.deactivated`。
 
 ---
 

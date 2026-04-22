@@ -1783,6 +1783,66 @@ Response 200: `{ patient_id, profile_version, updated_at }`
 1. 更新 `patient_profile` 对应字段，`profile_version` 自增
 2. 若 `long_text_profile` 变更，同事务写 Outbox 发布 `profile.updated`，触发 ai-vectorizer-service 重建向量
 
+#### 5.3.8 GET /api/v1/admin/patients（管理员全局只读列表）
+
+描述：管理员跨监护关系查询全局患者档案（FR-PRO-011，V2.1 增量）。
+
+权限要求：`ADMIN` 或 `SUPER_ADMIN`；`admin` 与 `super_admin` 在本接口权限一致（均为只读）。
+
+Query：`keyword` / `status` / `gender` / `primary_guardian_user_id` / `cursor` / `page_size`
+
+Response 200：`items[]` 含 `patient_id / profile_no / short_code / patient_name(脱敏) / gender / age / status / primary_guardian{user_id,nickname(脱敏),phone(脱敏)} / guardian_count / active_task_id / created_at`，`next_cursor` / `has_next`。
+
+数据访问：
+
+- SQL 主表 `patient_profile`，LEFT JOIN `guardian_relation g ON g.patient_id = p.id AND g.relation_role='PRIMARY_GUARDIAN' AND g.relation_status='ACTIVE'` LEFT JOIN `sys_user u ON u.id = g.user_id`；
+- 排序 `p.id DESC`，游标使用 `encodeBase64({"id": lastId})`；
+- `guardian_count` 子查询：`SELECT count(*) FROM guardian_relation WHERE patient_id=p.id AND relation_status='ACTIVE'`。
+
+脱敏（HC-07）：PII 字段走 `@Desensitize(NAME/PHONE/EMAIL)`；响应 DTO 序列化前统一处理。
+
+审计：同事务写 `sys_log`，`module=PROFILE`，`action=admin.patient.list`，`risk_level=MEDIUM`，`object_id=null`，`detail.filters={...}`。
+
+#### 5.3.9 GET /api/v1/admin/patients/{patient_id}（管理员档案详情只读）
+
+描述：管理员只读查看患者档案完整详情（FR-PRO-011）。权限同 §5.3.8。
+
+处理逻辑：
+1. 加载 `patient_profile` 并按 HC-07 脱敏；
+2. 加载 `guardian_relation` 所有 `relation_status='ACTIVE'` 成员 JOIN `sys_user`，按 `relation_role=PRIMARY_GUARDIAN DESC, created_at ASC` 排序；
+3. 写 `sys_log`，`action=admin.patient.read`，`risk_level=MEDIUM`，`object_id=patient_id`。
+
+#### 5.3.10 POST /api/v1/admin/patients/{patient_id}/guardians/force-transfer（管理员强制转移主监护）
+
+描述：行政强制转移主监护权（FR-PRO-012，V2.1 增量），用于原主监护失联 / 禁用 / 注销的场景。
+
+权限要求：仅 `SUPER_ADMIN`，`X-Confirm-Level=CONFIRM_3`。
+
+Request Body：
+```json
+{
+  "target_user_id": "string, 必填",
+  "reason":         "string, 必填, 20-256",
+  "evidence_url":   "string, 可选"
+}
+```
+
+前置校验：
+- `target_user_id` 必须为当前 `patient_id` 的 `guardian_relation.relation_status='ACTIVE'` 成员；否则 `E_PRO_4044`；
+- `target_user_id` 对应 `sys_user.role=FAMILY` 且 `status=ACTIVE`；否则 `E_PRO_4035`；
+- `target_user_id` 非当前主监护本身。
+
+事务：
+1. `UPDATE guardian_relation SET relation_role='GUARDIAN' WHERE patient_id=? AND relation_role='PRIMARY_GUARDIAN'`；
+2. `UPDATE guardian_relation SET relation_role='PRIMARY_GUARDIAN' WHERE patient_id=? AND user_id=?`；
+3. `UPDATE patient_profile SET profile_version = profile_version + 1 WHERE id=?`（HC-01 乐观锁）；
+4. 写 Outbox `patient.primary_guardian.force_transferred`（见 §5.5.X）；
+5. 写 `sys_log`，`action=admin.patient.force_transfer_primary`，`risk_level=CRITICAL`，`confirm_level=CONFIRM_3`，`detail.previous_primary_user_id / new_primary_user_id / reason / evidence_url`。
+
+幂等：`Redis Key = "idem:req:{X-Request-Id}"，TTL = 24h`。
+
+异常对照：`E_PRO_4041` / `E_PRO_4046` / `E_PRO_4044` / `E_PRO_4035` / `E_AUTH_4031`。
+
 ### 5.4 核心流程伪代码
 
 #### 5.4.1 路人扫码触发 MISSING_PENDING（3 态走失状态机核心流程）
@@ -3871,6 +3931,89 @@ Request Body:
 前置校验：
 - 同 `partition_key` 无更早未修复 DEAD
 - 不可跨分区键重放
+
+#### 8.3.8 GET /api/v1/admin/users（用户列表）
+
+描述：管理员用户管理列表（FR-GOV-011，V2.1 增量）。
+
+权限矩阵（服务端强制过滤）：
+
+| 当前角色 | 可见 `role` 集合 |
+| :--- | :--- |
+| `ADMIN` | `FAMILY` 唯一 |
+| `SUPER_ADMIN` | `FAMILY` / `ADMIN` / `SUPER_ADMIN` 全部 |
+
+数据访问：`sys_user` 主表；`keyword` 走 `ILIKE` 匹配 `username/nickname`，对 `email/phone` 先做 hash 匹配（若配置了 PII hash 索引）退化为后缀匹配；排序 `id DESC`；游标 `encodeBase64({"id":lastId})`。
+
+脱敏：`email/phone` 在响应 DTO 层 `@Desensitize`。
+
+审计：`sys_log action=admin.user.list risk=LOW`（列表查询降级审计，仅记录过滤条件）。
+
+#### 8.3.9 GET /api/v1/admin/users/{user_id}（用户详情）
+
+描述：查看单个用户详情，含关联统计。
+
+权限矩阵：
+- `ADMIN`：仅能看 `role=FAMILY`，否则 `E_USR_4032`；
+- `SUPER_ADMIN`：任意。
+
+处理：`sys_user` 单行 + 聚合统计（`primary_guardian_patient_count` / `guardian_patient_count` / `pending_material_order_count`）。
+审计：`action=admin.user.read risk=LOW`。
+
+#### 8.3.10 PUT /api/v1/admin/users/{user_id}（修改用户信息 / 角色）
+
+描述：FR-GOV-012。
+
+授权矩阵：
+| 当前角色 | 可操作目标 | 可改字段 | 禁令 |
+| :--- | :--- | :--- | :--- |
+| `ADMIN` | `role=FAMILY` | `nickname/email/phone` | 不得传 `role` |
+| `SUPER_ADMIN` | 任意 | 全部 | 不得将 `SUPER_ADMIN` 降级（目标 `role=SUPER_ADMIN` 时拒绝 `role` 变更）；不得改自身 `role` |
+
+处理：
+1. 校验授权，违例即 `E_USR_4032/4033/4034/4035`；
+2. 事务更新 `sys_user`；若 `email` 变更：`email_verified=false` 并发送验证邮件；
+3. 若 `role` 变更：发布 `user.role.changed`，并写 Redis `auth:jti:revoke:{user_id}` 失效现行 JWT（HC-02）；
+4. `sys_log action=admin.user.update`，`risk_level=HIGH`，角色变更升级 `CRITICAL`。
+
+#### 8.3.11 POST /api/v1/admin/users/{user_id}/disable
+
+描述：FR-GOV-013。
+
+授权矩阵：
+- `ADMIN`：目标 `role=FAMILY` 且非自身；
+- `SUPER_ADMIN`：目标 `role IN (FAMILY,ADMIN)` 且非自身；`SUPER_ADMIN` **永不可禁用**。
+
+处理：
+1. `UPDATE sys_user SET status='DISABLED' WHERE id=? AND status='ACTIVE'`，影响行数=0 → `E_USR_4091`；
+2. 吊销 JWT（Redis 黑名单）；
+3. 查询 `guardian_relation` 中 `PRIMARY_GUARDIAN` 患者集合，若非空则 `detail.primary_patient_ids=[...]` 记录并发事件 `user.disabled` payload；
+4. `sys_log action=admin.user.disable risk=HIGH confirm=CONFIRM_2`。
+
+异常对照：`E_USR_4032/4033/4034/4041/4091`。
+
+#### 8.3.12 POST /api/v1/admin/users/{user_id}/enable
+
+描述：将 `DISABLED` 用户恢复 `ACTIVE`。授权矩阵同 §8.3.11。
+
+处理：CAS 更新 `status DISABLED → ACTIVE`，失败 `E_USR_4091`；发布 `user.enabled`；`sys_log risk=MEDIUM`。
+
+#### 8.3.13 DELETE /api/v1/admin/users/{user_id}（逻辑删除 / 注销）
+
+描述：FR-GOV-014。
+
+授权矩阵：同 §8.3.11；`X-Confirm-Level=CONFIRM_3`。
+
+前置：
+- 目标为任何患者 `PRIMARY_GUARDIAN` → `E_USR_4092`；
+- 目标持有 `PENDING_AUDIT/PENDING_SHIP` 工单或 `ACTIVE/SUSTAINED` 任务 → `E_USR_4093`。
+
+事务：
+1. `UPDATE sys_user SET status='DEACTIVATED', deactivated_at=now(), username=username||'#DEL_'||epoch, email=email||'#DEL_'||epoch, phone=phone||'#DEL_'||epoch WHERE id=?`（释放唯一约束）；
+2. `UPDATE guardian_relation SET relation_status='REVOKED' WHERE user_id=? AND relation_role<>'PRIMARY_GUARDIAN'`；
+3. 吊销 JWT；
+4. 发布 `user.deactivated`；
+5. `sys_log action=admin.user.deactivate risk=CRITICAL confirm=CONFIRM_3`。
 
 ### 8.4 核心流程伪代码
 

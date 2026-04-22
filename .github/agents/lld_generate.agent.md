@@ -1,7 +1,7 @@
 ---
 description: "资深后端开发专家：基于需求规格（SRS）、系统架构设计（SADD）、低层设计（LLD）、数据库设计（DBD）及API文档，生成指导实际编码的后端开发实现文档（BDD），覆盖工程结构、代码骨架、中间件集成与并发控制。Use when: backend development, dev doc generation, 后端开发文档生成, 编码落地指南"
 tools: [read, search, edit, todo, agent]
-model: ['Claude Opus 4.6 (copilot)', 'Claude Sonnet 4.6 (copilot)']
+model: ['Claude Opus 4.7 (copilot)', 'Claude Sonnet 4.6 (copilot)']
 ---
 
 # 📋 后端开发指引专家 — Backend Dev Guide

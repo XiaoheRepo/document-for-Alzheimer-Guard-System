@@ -1377,6 +1377,15 @@ Action 白名单映射（对齐 API V2.0 §6）：
 | `confirm_missing` | A3 | `POST /api/v1/patients/{patient_id}/missing-pending/confirm` | `CONFIRM_3` | 行政级操作，二次确认 |
 | `approve_material_order` | A2 | `POST /api/v1/material/orders/{order_id}/approve` | `CONFIRM_2` | 高风险写入 |
 | `replay_outbox_dead` | A3 | `POST /api/v1/admin/super/outbox/dead/{event_id}/replay` | `CONFIRM_3` | 行政级操作 |
+| `admin_list_patients` | A0 | `GET /api/v1/admin/patients` | — | 只读，`ADMIN` / `SUPER_ADMIN`，PII 脱敏 |
+| `admin_read_patient` | A0 | `GET /api/v1/admin/patients/{patient_id}` | — | 只读，`ADMIN` / `SUPER_ADMIN` |
+| `admin_force_transfer_primary` | A4 | `POST /api/v1/admin/patients/{patient_id}/guardians/force-transfer` | `CONFIRM_3` | 行政级写入，仅 `SUPER_ADMIN`；永不允许 Agent 自动执行 |
+| `admin_list_users` | A0 | `GET /api/v1/admin/users` | — | 只读；服务端按当前角色强制过滤 `role` 维度 |
+| `admin_read_user` | A0 | `GET /api/v1/admin/users/{user_id}` | — | `ADMIN` 仅 `FAMILY` 目标，`SUPER_ADMIN` 任意 |
+| `admin_update_user` | A3 | `PUT /api/v1/admin/users/{user_id}` | `CONFIRM_2` | `role` 变更仅 `SUPER_ADMIN`，目标 `SUPER_ADMIN` 不可降级 |
+| `admin_disable_user` | A3 | `POST /api/v1/admin/users/{user_id}/disable` | `CONFIRM_2` | `SUPER_ADMIN` 目标永拒；自身目标永拒 |
+| `admin_enable_user` | A2 | `POST /api/v1/admin/users/{user_id}/enable` | `CONFIRM_1` | 授权矩阵同 disable |
+| `admin_deactivate_user` | A4 | `DELETE /api/v1/admin/users/{user_id}` | `CONFIRM_3` | 行政级终态；前置检查主监护 / 未终态任务
 
 ### 12.2 匿名链路安全（必须）
 
@@ -2130,4 +2139,162 @@ compile → checkstyle → unit-test（含 ArchUnit）→ integration-test → c
 9. OSS 文件上传校验文件类型与大小。
 
 **本手册即为后端系统唯一工程执行规范。除非通过规则变更流程，本手册中的"必须"条款不得绕过。**
+
+---
+
+## 24. 后台用户治理与管理员患者访问（V2.1 增量）
+
+> **本章依据**：API V2.0 §3.3.15–§3.3.17、§3.6.15–§3.6.20；LLD V2.0 §5.3.8–§5.3.10、§8.3.8–§8.3.13；DBD §2.3 `guardian_relation` / §2.6.1 `sys_user`。
+> **新增需求**：FR-GOV-011（用户列表）、FR-GOV-012（修改用户/角色）、FR-GOV-013（启/禁用）、FR-GOV-014（注销）、FR-PRO-011（管理员全局档案只读）、FR-PRO-012（管理员强制转移主监护）。
+
+### 24.1 服务归属与控制器（必须）
+
+| 接口 | 所属服务 | Controller |
+| :--- | :--- | :--- |
+| `GET /api/v1/admin/users` | `auth-service` | `AdminUserController#list` |
+| `GET /api/v1/admin/users/{id}` | `auth-service` | `AdminUserController#detail` |
+| `PUT /api/v1/admin/users/{id}` | `auth-service` | `AdminUserController#update` |
+| `POST /api/v1/admin/users/{id}/disable` | `auth-service` | `AdminUserController#disable` |
+| `POST /api/v1/admin/users/{id}/enable`  | `auth-service` | `AdminUserController#enable` |
+| `DELETE /api/v1/admin/users/{id}` | `auth-service` | `AdminUserController#deactivate` |
+| `GET /api/v1/admin/patients` | `profile-service` | `AdminPatientController#list` |
+| `GET /api/v1/admin/patients/{id}` | `profile-service` | `AdminPatientController#detail` |
+| `POST /api/v1/admin/patients/{id}/guardians/force-transfer` | `profile-service` | `AdminPatientController#forceTransferPrimary` |
+
+### 24.2 授权矩阵实现（必须）
+
+引入 `@AdminRoleGuard` 方法注解：
+
+```java
+@AdminRoleGuard(
+    allowed = {Role.ADMIN, Role.SUPER_ADMIN},
+    targetScope = TargetScope.USER,      // 或 TargetScope.PATIENT
+    rule = AuthzRule.ADMIN_MANAGES_FAMILY_ONLY // 或 SUPERADMIN_ONLY / SUPERADMIN_EXCLUDE_SELF
+)
+```
+
+拦截器逻辑顺序（与 §12.1 门禁一致）：
+1. JWT 解析 → 当前 `operator_user_id / role`；
+2. 加载 `targetUser` / `targetPatient`；
+3. 按 `rule` 匹配矩阵；失败抛对应 `E_USR_4032/4033/4034/4035` 或 `E_PRO_4035/4036`；
+4. 高危操作校验 `X-Confirm-Level`。
+
+### 24.3 关键规则（必须）
+
+| # | 规则 | 违反时错误码 |
+| :---: | :--- | :--- |
+| 1 | `ADMIN` 仅能操作 `role=FAMILY` 用户 | `E_USR_4032` |
+| 2 | `SUPER_ADMIN` 不可被禁用 / 注销 / 降级 | `E_USR_4033` |
+| 3 | 任何管理员不得操作自身（禁用 / 删除 / 改自身角色） | `E_USR_4034` |
+| 4 | `role` 字段仅 `SUPER_ADMIN` 可修改 | `E_USR_4035` |
+| 5 | 删除用户前：非 `PRIMARY_GUARDIAN` 且无未终态任务 / 工单 | `E_USR_4092` / `E_USR_4093` |
+| 6 | 管理员查询 / 查看患者档案 PII 必须 `@Desensitize` | HC-07 |
+| 7 | 强制转移主监护仅 `SUPER_ADMIN` + `CONFIRM_3` + 目标为现 `ACTIVE` 监护成员 | `E_PRO_4035/4044/4046`、`E_AUTH_4031` |
+| 8 | 禁用 / 注销 / 角色变更后必须吊销目标所有 JWT | HC-02（强制下线） |
+| 9 | 所有管理员写操作必须写 `sys_log`，`risk_level` ≥ `HIGH` | §12.5 |
+| 10 | 管理员查询不得暴露原始手机号 / 邮箱 / 姓名 | HC-07 |
+
+### 24.4 服务层骨架（必须）
+
+```java
+// auth-service
+@Service @RequiredArgsConstructor
+public class AdminUserService {
+
+    private final SysUserRepository userRepo;
+    private final GuardianRelationRepository guardianRepo;
+    private final JwtRevocationService jwtRevoke;
+    private final OutboxPublisher outbox;
+    private final AuditLogger audit;
+
+    @Transactional
+    public DisableResult disable(long targetId, long operatorId, Role operatorRole, String reason) {
+        SysUser t = userRepo.findById(targetId).orElseThrow(() -> biz(E_USR_4041));
+        AuthzGuards.assertOperable(operatorId, operatorRole, t); // 规则 1/2/3
+        int n = userRepo.casStatus(targetId, ACTIVE, DISABLED);
+        if (n == 0) throw biz(E_USR_4091);
+        jwtRevoke.revokeAllForUser(targetId);
+        List<Long> primaryPatientIds = guardianRepo.findPrimaryPatientIds(targetId);
+        outbox.publish("user.disabled", UserDisabledPayload.of(targetId, operatorId, reason, primaryPatientIds));
+        audit.log(operatorId, "admin.user.disable", "HIGH", "CONFIRM_2", targetId, reason);
+        return new DisableResult(targetId, DISABLED, Instant.now());
+    }
+    // enable / deactivate / update 类似
+}
+```
+
+### 24.5 Outbox 事件 payload（必须）
+
+```json
+// user.disabled / user.enabled / user.deactivated
+{
+  "user_id":            "2001",
+  "operator_user_id":   "9001",
+  "previous_status":    "ACTIVE",
+  "new_status":         "DISABLED",
+  "reason":             "...",
+  "primary_patient_ids": ["1001", "1007"],
+  "occurred_at":        "2026-04-19T22:00:00Z",
+  "trace_id":           "trc_xxx"
+}
+```
+
+```json
+// user.role.changed
+{
+  "user_id":         "2001",
+  "operator_user_id": "9001",
+  "previous_role":   "FAMILY",
+  "new_role":        "ADMIN",
+  "occurred_at":     "2026-04-19T21:30:00Z",
+  "trace_id":        "trc_xxx"
+}
+```
+
+```json
+// patient.primary_guardian.force_transferred
+{
+  "patient_id":                "1001",
+  "previous_primary_user_id":  "2001",
+  "new_primary_user_id":       "2002",
+  "operator_user_id":          "9001",
+  "reason":                    "原主监护账号已注销，行政审批单号 XYZ",
+  "evidence_url":              "https://oss.example.com/approval/2026-xyz.pdf",
+  "occurred_at":               "2026-04-19T21:00:00Z",
+  "trace_id":                  "trc_xxx"
+}
+```
+
+### 24.6 消费端（必须）
+
+| 事件 | 消费方 | 行为 |
+| :--- | :--- | :--- |
+| `user.disabled` / `user.deactivated` | `notify-service` | 站内通知目标用户（不发短信，HC-06）；若 `primary_patient_ids` 非空，额外通知运营群组（站内消息） |
+| `user.enabled` | `notify-service` | 站内通知 |
+| `user.role.changed` | `notify-service` + `gateway-security` | 通知目标；失效 JWT（规则 8）|
+| `patient.primary_guardian.force_transferred` | `notify-service` | 通知原主监护 + 新主监护 + 其他 ACTIVE 成员 |
+
+### 24.7 审计落库字段（必须）
+
+| action | module | risk_level | confirm_level |
+| :--- | :--- | :--- | :--- |
+| `admin.user.list` | `GOV` | `LOW` | — |
+| `admin.user.read` | `GOV` | `LOW` | — |
+| `admin.user.update` | `GOV` | `HIGH`（角色变更 `CRITICAL`） | `CONFIRM_2` |
+| `admin.user.disable` | `GOV` | `HIGH` | `CONFIRM_2` |
+| `admin.user.enable` | `GOV` | `MEDIUM` | `CONFIRM_1` |
+| `admin.user.deactivate` | `GOV` | `CRITICAL` | `CONFIRM_3` |
+| `admin.patient.list` | `PROFILE` | `MEDIUM` | — |
+| `admin.patient.read` | `PROFILE` | `MEDIUM` | — |
+| `admin.patient.force_transfer_primary` | `PROFILE` | `CRITICAL` | `CONFIRM_3` |
+
+### 24.8 测试清单（必须）
+
+1. 授权矩阵单元测：`AdminRoleGuardTest` 覆盖 12 种组合（`ADMIN/SUPER_ADMIN × 目标 FAMILY/ADMIN/SUPER_ADMIN × 非自身/自身`）。
+2. 禁用级联：`disable → JWT 吊销 → 再次调受保护 API 应 401`。
+3. 注销前置：持有主监护关系 → `E_USR_4092`；走完强制转移后 → 可注销。
+4. 强制转移：目标非 `ACTIVE` 监护成员 → `E_PRO_4044`；成功后患者 `profile_version` +1，`guardian_relation` 角色对调。
+5. 脱敏：响应中手机号 / 邮箱 / 姓名格式正则 `\*{3,}`。
+6. 审计：每次成功调用写入 `sys_log` 可查询。
+
 

@@ -86,6 +86,13 @@
 | 外部系统 | 极光推送服务（JPush） | App 后台实时通知推送 | FR-GOV-010 |
 | 外部系统 | 邮件服务（SMTP） | 账号验证、密码重置、重要业务通知 | FR-GOV-002, FR-GOV-010 |
 
+
+> **治理能力边界（V2.1 增量，对应 SRS FR-GOV-011 ~ FR-GOV-014、FR-PRO-011 / FR-PRO-012）**：
+>
+> - **普通管理员 `ADMIN`**：仅可列表 / 读取 / 更新 `role=FAMILY` 的用户（不得变更 role）；不可禁用 / 启用 / 注销 `ADMIN`、`SUPER_ADMIN` 账号；可只读查看全局患者档案（PII 统一脱敏，HC-07）。
+> - **超级管理员 `SUPER_ADMIN`**：拥有全部用户治理权限，包括修改 `role`、禁用 / 启用、逻辑注销（`CONFIRM_3`）；可执行患者主监护行政强制转移（`CONFIRM_3`）。
+> - **全局硬约束**：①`SUPER_ADMIN` 永不可被禁用 / 注销 / 降级；②任何管理员不得对自身账号执行禁用 / 注销 / 改角色；③治理性写操作必须发 Outbox（`user.role.changed` / `user.disabled` / `user.enabled` / `user.deactivated` / `patient.primary_guardian.force_transferred`）并写 `risk_level≥MEDIUM` 审计；④所有后台返回的 PII 字段统一经 HC-07 脱敏，禁止明文导出。
+
 ### 3.2 上下文总览
 
 ```mermaid
@@ -589,6 +596,11 @@ graph LR
 | 事件 | 生产方 | 消费方 | 语义 | Outbox |
 | :--- | :--- | :--- | :--- | :--- |
 | `notification.sent` | 通知服务 | 审计服务 | 通知发送完成（含渠道、目标、结果、`trace_id`），用于审计追踪 | 否（直入 Redis Streams） |
+| `user.role.changed` | Auth 服务（AdminUserService） | Auth / Notification / 审计 | 目标用户角色变更（仅 SUPER_ADMIN 可发）；消费方负责作废 JWT、站内广播、写审计 | 是 |
+| `user.disabled` | Auth 服务 | Auth / Notification / Profile 运营视图 | 目标账号被禁用；payload 含 `primary_patient_ids[]`（若非空需运营跟进强制转移） | 是 |
+| `user.enabled` | Auth 服务 | Auth / Notification | 目标账号解除禁用 | 是 |
+| `user.deactivated` | Auth 服务 | Auth / Profile / Notification / 审计 | 逻辑注销完成（`CONFIRM_3`）；唯一字段已追加 `#DEL_{ts}` 后缀，JWT 全量失效 | 是 |
+| `patient.primary_guardian.force_transferred` | Profile 服务（AdminPatientService） | Profile / Notification / 审计 | 超管行政强制主监护转移（`CONFIRM_3`）；payload 含 `from_user_id` / `to_user_id` / `operator_user_id` / `reason` | 是 |
 
 ### 5.3 Outbox 强一致投递模型
 

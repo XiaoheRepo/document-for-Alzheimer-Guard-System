@@ -181,7 +181,7 @@ web-admin/
 ├─ src/
 │  ├─ api/                         # 按域划分的 API 封装（纯函数，无 UI）
 │  │  ├─ auth.ts                   # /auth/*、/users/me
-│  │  ├─ dashboard.ts              # /home/dashboard、/admin/dashboard 指标聚合
+│  │  ├─ dashboard.ts              # /api/v1/dashboard 指标聚合
 │  │  ├─ task.ts                   # /rescue/tasks*
 │  │  ├─ clue.ts                   # /clues*
 │  │  ├─ profile.ts                # /patients*
@@ -1103,26 +1103,27 @@ defineProps<{ option: echarts.EChartsOption; height?: number | string; loading?:
 | 编号 | 页面名 | 路由 | 所属模块 | 角色 | 关联 API | 覆盖需求 |
 | :---: | :--- | :--- | :--- | :--- | :--- | :--- |
 | P-01 | 登录页 | `/login` | Auth | 公开 | `POST /api/v1/auth/login`；`POST /api/v1/auth/token/refresh`；`POST /api/v1/auth/password-reset/request`；`POST /api/v1/auth/password-reset/confirm` | FR-GOV-001/002 |
-| P-02 | 仪表盘 | `/dashboard` | Overview | admin / super_admin | `GET /api/v1/home/dashboard` + 可选 `GET /api/v1/admin/logs?...`（近 24h 告警） | FR-GOV-005 |
+| P-02 | 仪表盘 | `/dashboard` | Overview | admin / super_admin | `GET /api/v1/dashboard` + 可选 `GET /api/v1/admin/logs?...`（近 24h 告警） | FR-GOV-005 |
 | P-03a | 任务治理列表 | `/tasks` | TASK | admin / super_admin | `GET /api/v1/rescue/tasks` | FR-TASK-005 |
 | P-03b | 任务详情 | `/tasks/:taskId` | TASK | admin / super_admin | `GET /api/v1/rescue/tasks/{task_id}/snapshot`；`GET /api/v1/rescue/tasks/{task_id}/full`；`GET /api/v1/rescue/tasks/{task_id}/trajectory/latest`；`POST /api/v1/rescue/tasks/{task_id}/sustained`；`POST /api/v1/rescue/tasks/{task_id}/close` | FR-TASK-002/003/006 |
 | P-04a | 线索复核队列 | `/clues/review` | CLUE | admin / super_admin | `GET /api/v1/clues?review_state=PENDING_REVIEW` | FR-CLUE-005 |
 | P-04b | 线索列表（全量） | `/clues` | CLUE | admin / super_admin | `GET /api/v1/clues` | FR-CLUE-004 |
 | P-04c | 线索详情 & 复核动作 | `/clues/:clueId` （弹窗形式） | CLUE | admin / super_admin | `POST /api/v1/clues/{clue_id}/override`；`POST /api/v1/clues/{clue_id}/reject` | FR-CLUE-005/006 |
-| P-05a | 患者档案列表 | `/patients` | PROFILE | admin / super_admin | `GET /api/v1/patients` | FR-PRO-008 |
-| P-05b | 患者档案详情 | `/patients/:patientId` | PROFILE | admin / super_admin | `GET /api/v1/patients/{patient_id}` | FR-PRO-001/003 |
+| P-05a | 患者档案列表 | `/patients` | PROFILE | admin / super_admin | `GET /api/v1/admin/patients` | FR-PRO-008 |
+| P-05b | 患者档案详情 | `/patients/:patientId` | PROFILE | admin / super_admin | `GET /api/v1/admin/patients/{patient_id}` | FR-PRO-001/003 |
 | P-06a | 物资工单列表 | `/material/orders` | MAT | admin / super_admin | `GET /api/v1/material/orders` | FR-MAT-001/002 |
-| P-06b | 物资工单详情 | `/material/orders/:orderId` | MAT | admin / super_admin | `GET /api/v1/material/orders?order_id=...`；`POST /api/v1/material/orders/{order_id}/approve`；`POST /api/v1/material/orders/{order_id}/ship`；`POST /api/v1/material/orders/{order_id}/cancel` | FR-MAT-002/003 |
+| P-06b | 物资工单详情 | `/material/orders/:orderId` | MAT | admin / super_admin | `GET /api/v1/material/orders?order_id=...`；`POST /api/v1/material/orders/{order_id}/approve`；`POST /api/v1/material/orders/{order_id}/ship`；`POST /api/v1/material/orders/{order_id}/resolve-exception`；`POST /api/v1/material/orders/{order_id}/cancel` | FR-MAT-002/003/004 |
 | P-07a | 标签库存 | `/tags/inventory` | MAT | admin / super_admin | `GET /api/v1/tags/inventory/summary`；`POST /api/v1/tags/batch-generate`（super_admin） | FR-MAT-004/005 |
 | P-07b | 批量发号任务详情 | `/tags/batch-jobs/:jobId` | MAT | admin / super_admin | `GET /api/v1/tags/batch-generate/jobs/{job_id}` | FR-MAT-005 |
 | P-08 | 通知中心 | `/notifications` | GOV | admin / super_admin | `GET /api/v1/notifications/inbox`；`POST /api/v1/notifications/{notification_id}/read` | FR-GOV-008 |
 | P-09 | 系统配置 | `/admin/configs` | GOV | admin（只读） / super_admin（可写） | `GET /api/v1/admin/configs`；`PUT /api/v1/admin/configs/{config_key}` | FR-GOV-006 |
-| P-10 | 审计日志 | `/admin/logs` | GOV | admin / super_admin | `GET /api/v1/admin/logs` | FR-GOV-007 |
+| P-10 | 审计日志 | `/admin/logs` | GOV | admin / super_admin | `GET /api/v1/admin/logs`；`GET /api/v1/admin/logs/export`（super_admin） | FR-GOV-007 |
 | P-11 | DEAD 事件 | `/admin/dead-letter` | GOV | **super_admin 独占** | `GET /api/v1/admin/super/outbox/dead`；`POST /api/v1/admin/super/outbox/dead/{event_id}/replay` | FR-GOV-009 |
 | P-12 | 个人中心 | `/me` | Auth | admin / super_admin | `GET /api/v1/users/me`；`PUT /api/v1/users/me/password` | FR-GOV-003 |
 | P-13 | 错误页 | `/401` `/403` `/404` `/500` | Common | 公开 | — | — |
+| P-16 | 字典管理 | `/admin/dicts` | GOV | admin（只读） / super_admin（可写） | `GET /api/v1/admin/configs?group=dict`；`PUT /api/v1/admin/configs/{config_key}` | FR-GOV-009 |
 
-> 说明：V2 API 未提供独立的 `/api/v1/admin/users` 列表接口；因此 Web 管理端不提供"用户治理"页面，用户的禁用/启用/重置由后端 DBA + `/admin/configs` + 审计追踪支撑。**此项已在矩阵 B 中标注为"后端未提供对应 API"**，不视为覆盖缺失。
+> 说明：管理员访问患者档案使用专用管理员接口 `GET /api/v1/admin/patients[/{id}]`（P-15），具备全局视图 + PII 按角色脱敏；家属独占的 `GET /api/v1/patients` 不在管理端消费。P-05 路由在管理端作为患者快速检索入口，重定向至 P-15 组件复用。
 
 ---
 
@@ -1212,11 +1213,11 @@ defineProps<{ option: echarts.EChartsOption; height?: number | string; loading?:
 
 | 区块 | 来源字段 | API |
 | :--- | :--- | :--- |
-| KPI 卡片 × 4 | `summary.active_task_count`、`summary.pending_clue_count`、`summary.pending_order_count`、`summary.recent_alert_count` | `GET /api/v1/home/dashboard?role=admin` |
+| KPI 卡片 × 4 | `summary.active_task_count`、`summary.pending_clue_count`、`summary.pending_order_count`、`summary.recent_alert_count` | `GET /api/v1/dashboard` |
 | 趋势图 | `series.task_daily`、`series.clue_daily` | 同上 |
 | 风险告警 | `recent_alerts[]` | 同上；点击单条跳 `/admin/logs?trace_id=<id>` |
 
-> 注：若 `/home/dashboard` 未区分管理员视角，则前端退化为聚合调用 `GET /api/v1/rescue/tasks?state=ACTIVE&page_size=1`（取 total）、`GET /api/v1/clues?review_state=PENDING_REVIEW&page_size=1`、`GET /api/v1/material/orders?state=PENDING_AUDIT&page_size=1` 三个计数。
+> 注：若 `/api/v1/dashboard` 未区分管理员视角，则前端退化为聚合调用 `GET /api/v1/rescue/tasks?state=ACTIVE&page_size=1`（取 total）、`GET /api/v1/clues?review_state=PENDING_REVIEW&page_size=1`、`GET /api/v1/material/orders?state=PENDING_AUDIT&page_size=1` 三个计数。
 
 #### 14.P-02.3 交互动作
 
@@ -1487,7 +1488,7 @@ defineProps<{ option: echarts.EChartsOption; height?: number | string; loading?:
 
 - 视图：`views/profile/PatientListView.vue`
 - 权限：admin / super_admin（`patient:read`）
-- 业务目标：辅助线索复核与工单审批时快速检索患者（FR-PRO-008）。管理端不提供创建/修改档案（属家属端 Android）。
+- 业务目标：辅助线索复核与工单审批时快速检索患者（FR-PRO-008）。管理端不提供创建/修改档案（属家属端 Android）。本页内部复用 **P-15 管理员患者档案**组件（`AdminPatientListView.vue`）。
 
 #### 14.P-05a.1 布局
 
@@ -1500,7 +1501,7 @@ defineProps<{ option: echarts.EChartsOption; height?: number | string; loading?:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### 14.P-05a.2 字段（`GET /api/v1/patients`）
+#### 14.P-05a.2 字段（`GET /api/v1/admin/patients`）
 
 | 列 | 字段 | 展示 |
 | :--- | :--- | :--- |
@@ -1521,7 +1522,7 @@ defineProps<{ option: echarts.EChartsOption; height?: number | string; loading?:
 
 | 区块 | API |
 | :--- | :--- |
-| 基础资料 / 外观 / 围栏 | `GET /api/v1/patients/{patient_id}` |
+| 基础资料 / 外观 / 围栏 | `GET /api/v1/admin/patients/{patient_id}` |
 | 活跃任务 | `GET /api/v1/rescue/tasks?patient_id=...&state=ACTIVE,SUSTAINED` |
 | 历史任务 | `GET /api/v1/rescue/tasks?patient_id=...&state=CLOSED_FOUND,CLOSED_FALSE_ALARM` |
 
@@ -1584,6 +1585,7 @@ defineProps<{ option: echarts.EChartsOption; height?: number | string; loading?:
 | :--- | :--- | :--- | :--- | :--- |
 | 「审批通过」 | 表单：`reviewer_note?` | `POST /api/v1/material/orders/{order_id}/approve` | `material.order:approve` | `Modal.confirm` |
 | 「发货」 | 表单：`tracking_no*`、`carrier*`、勾选"已核对单号" | `POST /api/v1/material/orders/{order_id}/ship` | `material.order:ship` | `Modal.confirm` |
+| 「异常处置」（仅 `EXCEPTION` 状态可见） | 选择 `RESHIP`（补发，需填写新物流单号）或 `VOID`（直接作废）；理由必填 10-200 字 | `POST /api/v1/material/orders/{order_id}/resolve-exception` | `material.order:resolve-exception` | 输入"确认处置" |
 | 「取消工单」 | 理由必填 | `POST /api/v1/material/orders/{order_id}/cancel` | `material.order:approve` | 输入"确认取消" |
 | 家属端操作「签收」 | — | `POST /api/v1/material/orders/{order_id}/receive` | 不在管理端展示 | — |
 
@@ -1599,9 +1601,11 @@ defineProps<{ option: echarts.EChartsOption; height?: number | string; loading?:
 
 | 错误码 | 含义 | UI |
 | :--- | :--- | :--- |
-| `E_MAT_4091` | 状态机非法跃迁（如非 `PENDING_AUDIT` 不能 approve） | 按钮禁用 + tooltip；失败刷新 |
+| `E_MAT_4091` | 状态机非法跃迁（如非 `PENDING_AUDIT` 不能 approve，非 `EXCEPTION` 不能 resolve） | 按钮禁用 + tooltip；失败刷新 |
 | `E_MAT_4092` | 物流单号重复 | `form.setFields({ tracking_no: { errors: [...] } })` |
 | `E_MAT_4093` | 库存不足（发号阶段） | 提示联系 super_admin 批量发号 |
+| `E_MAT_4224` | 补发时物流单号重复 / 库存不足 | `message.error` + 刷新 |
+| `E_MAT_4226` | `action` 枚举值非法或 `reason` 为空 | 表单字段级错误 |
 
 ---
 
@@ -1799,13 +1803,14 @@ defineProps<{ option: echarts.EChartsOption; height?: number | string; loading?:
 | 点行 | 弹抽屉显示 `request / response / trace_id / pod_id / duration_ms` | `audit:read` |
 | "复制 trace_id" | 复制到剪贴板 | — |
 | "跳后端日志" | 若链路接入 Kibana，按 `VITE_KIBANA_URL?trace_id=...` 新窗口打开（可配置） | 外部 |
+| 「导出日志」（super_admin 独占） | 展开参数面板：时间范围（必填，≤ 31 天，≤ 180 天归档）+ 可选 `operator_id` / `action` / `format`（json/csv）；确认后调接口下载 | `audit:export` |
 
 #### 14.P-10.4 性能与安全
 
 | 项 | 规则 |
 | :--- | :--- |
 | 大字段渲染 | 抽屉打开时才懒加载 request/response 完整内容；列表行仅展示 150 字摘要 |
-| 导出 | 仅允许按 `trace_id` 单条下载为 JSON；禁止批量导出至前端（违反 HC-07） |
+| 导出 | 仅 `super_admin` 可操作；通过 `GET /api/v1/admin/logs/export` 服务端流式输出 CSV/JSON；前端触发下载，不在浏览器内存中缓存全量数据；单次上限 10,000 条（`E_GOV_4094`）|
 | 脱敏 | 服务端已脱敏；前端不再解密 |
 
 ---
@@ -2094,6 +2099,54 @@ page.admin.patient.dialog.forceTransfer.title/target/reason/evidence/confirm/war
 
 ---
 
+### 14.P-16 字典管理 `/admin/dicts`
+
+> **依据**：SRS FR-GOV-009（P1）、`GET /api/v1/admin/configs` 中 `group=dict` 分组键值对；业务枚举文案（线索驳回原因、物料类型、标签状态展示文本、通知推送模板等）通过系统配置表扩展存储。
+
+- 视图：`views/admin/DictView.vue` · 布局：`DefaultLayout`
+- 权限：admin（`dict:read` 只读）/ super_admin（`dict:read` + `dict:write`）
+- 业务目标：后台可视化配置业务状态字典文案与推送模板（FR-GOV-009），避免硬编码
+
+#### 14.P-16.1 布局线框
+
+```text
+┌ Tab：[线索驳回原因] [物料类型] [标签状态文案] [推送模板] [邮件模板] ──┐
+├ 操作条：[新增条目(super_admin)] 搜索:[__] 刷新🔄 ──────────────────┤
+├ 表格 ──────────────────────────────────────────────────────────────┤
+│ Key | 中文文案 | 英文文案 | 描述 | 更新时间 | 操作                     │
+│ clue.reject.speed_anomaly | 移动速度异常 | Speed Anomaly | ... | ... | [编辑(super)] │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+#### 14.P-16.2 数据来源
+
+| 操作 | API | 说明 |
+| :--- | :--- | :--- |
+| 读取列表 | `GET /api/v1/admin/configs?group=dict` | 按 `group=dict` 过滤，前端再按 Tab 类型二次分组 |
+| 编辑条目 | `PUT /api/v1/admin/configs/{config_key}` | `value` 为 JSON 格式 `{"zh":"...", "en":"..."}` |
+
+> **注**：本页复用 P-09 系统配置的接口与组件，差异仅在于 `group` 过滤和 Tab UI；可在 `ConfigView.vue` 中增加 `dict` 模式 prop，不新建组件。
+
+#### 14.P-16.3 交互动作
+
+| 触发 | 动作 | API | 权限 | 二次确认 |
+| :--- | :--- | :--- | :--- | :--- |
+| 「编辑」（super_admin） | ProDrawer，输入中文/英文文案，展示 diff | `PUT /api/v1/admin/configs/{config_key}` | `dict:write` | `Modal.confirm` |
+
+#### 14.P-16.4 校验
+
+| 字段 | 规则 |
+| :--- | :--- |
+| `zh` | 1–100 字 |
+| `en` | 1–100 chars，英文字符 |
+| `config_key` | 只读，不可修改 |
+
+#### 14.P-16.5 i18n keys
+
+`page.dict.tab.clue_reject`、`page.dict.tab.material_type`、`page.dict.tab.tag_status`、`page.dict.tab.push_template`、`page.dict.tab.email_template`、`page.dict.btn.edit`、`page.dict.label.zh`、`page.dict.label.en`
+
+---
+
 ## 15. API 覆盖矩阵
 
 ### 15.1 矩阵 A：页面 → API
@@ -2104,7 +2157,7 @@ page.admin.patient.dialog.forceTransfer.title/target/reason/evidence/confirm/war
 | P-01 | POST | `/api/v1/auth/token/refresh` | 刷新 token（拦截器内自动） |
 | P-01 | POST | `/api/v1/auth/password-reset/request` | 忘记密码 |
 | P-01 | POST | `/api/v1/auth/password-reset/confirm` | 密码重置确认 |
-| P-02 | GET | `/api/v1/home/dashboard` | 仪表盘指标聚合 |
+| P-02 | GET | `/api/v1/dashboard` | 仪表盘指标聚合 |
 | P-03a | GET | `/api/v1/rescue/tasks` | 任务治理列表 |
 | P-03b | GET | `/api/v1/rescue/tasks/{task_id}/snapshot` | 任务快照 |
 | P-03b | GET | `/api/v1/rescue/tasks/{task_id}/full` | 任务全景聚合 |
@@ -2119,6 +2172,7 @@ page.admin.patient.dialog.forceTransfer.title/target/reason/evidence/confirm/war
 | P-06a | GET | `/api/v1/material/orders` | 工单列表 |
 | P-06b | POST | `/api/v1/material/orders/{order_id}/approve` | 审批 |
 | P-06b | POST | `/api/v1/material/orders/{order_id}/ship` | 发货 |
+| P-06b | POST | `/api/v1/material/orders/{order_id}/resolve-exception` | 物流异常处置（补发/作废） |
 | P-06b | POST | `/api/v1/material/orders/{order_id}/cancel` | 取消工单 |
 | P-07a | GET | `/api/v1/tags/inventory/summary` | 库存摘要 |
 | P-07a | POST | `/api/v1/tags/batch-generate` | 批量发号（super_admin） |
@@ -2128,6 +2182,9 @@ page.admin.patient.dialog.forceTransfer.title/target/reason/evidence/confirm/war
 | P-09 | GET | `/api/v1/admin/configs` | 配置列表 |
 | P-09 | PUT | `/api/v1/admin/configs/{config_key}` | 配置修改（super_admin） |
 | P-10 | GET | `/api/v1/admin/logs` | 审计日志 |
+| P-10 | GET | `/api/v1/admin/logs/export` | 导出日志（super_admin） |
+| P-16 | GET | `/api/v1/admin/configs?group=dict` | 字典条目读取 |
+| P-16 | PUT | `/api/v1/admin/configs/{config_key}` | 编辑字典条目（super_admin） |
 | P-11 | GET | `/api/v1/admin/super/outbox/dead` | DEAD 列表 |
 | P-11 | POST | `/api/v1/admin/super/outbox/dead/{event_id}/replay` | DEAD 重放 |
 | P-12 | GET | `/api/v1/users/me` | 我的信息 |
@@ -2170,14 +2227,15 @@ page.admin.patient.dialog.forceTransfer.title/target/reason/evidence/confirm/war
 | POST | `/api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/respond` | PROFILE | — | ❎（家属） | |
 | POST | `/api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/cancel` | PROFILE | — | ❎（家属） | |
 | DELETE | `/api/v1/patients/{patient_id}/guardians/{user_id}` | PROFILE | — | ❎（家属） | |
-| GET | `/api/v1/patients/{patient_id}` | PROFILE | P-05b、P-03b（患者卡） | ✅ | |
-| GET | `/api/v1/patients` | PROFILE | P-05a | ✅ | |
+| GET | `/api/v1/patients/{patient_id}` | PROFILE | P-03b（患者卡提速导航） | ✅ | 家属客户端接口，管理端只在任务详情内嵌入导航对象时少量使用 |
+| GET | `/api/v1/patients` | PROFILE | — | ❎（家属独占） | 管理端患者档案全局视图使用专用管理员接口 |
 | DELETE | `/api/v1/patients/{patient_id}` | PROFILE | — | ❎（家属） | |
 | POST | `/api/v1/material/orders` | MAT | — | ❎（家属端申领） | |
 | POST | `/api/v1/material/orders/{order_id}/approve` | MAT | P-06b | ✅ | |
 | POST | `/api/v1/material/orders/{order_id}/ship` | MAT | P-06b | ✅ | |
 | POST | `/api/v1/material/orders/{order_id}/receive` | MAT | — | ❎（家属签收） | |
 | POST | `/api/v1/material/orders/{order_id}/cancel` | MAT | P-06b | ✅ | |
+| POST | `/api/v1/material/orders/{order_id}/resolve-exception` | MAT | P-06b | ✅ | V2.2 新增，AC-07 P0 |
 | POST | `/api/v1/tags/{tag_code}/bind` | MAT | — | ❎（家属） | |
 | POST | `/api/v1/tags/{tag_code}/loss/confirm` | MAT | — | ❎（家属） | |
 | POST | `/api/v1/tags/batch-generate` | MAT | P-07a | ✅ | super_admin |
@@ -2199,6 +2257,7 @@ page.admin.patient.dialog.forceTransfer.title/target/reason/evidence/confirm/war
 | PUT | `/api/v1/admin/configs/{config_key}` | GOV | P-09 | ✅ | |
 | GET | `/api/v1/admin/configs` | GOV | P-09 | ✅ | |
 | GET | `/api/v1/admin/logs` | GOV | P-10 | ✅ | |
+| GET | `/api/v1/admin/logs/export` | GOV | P-10（super_admin） | ✅ | V2.2 新增，FR-GOV-007 P1 |
 | GET | `/api/v1/notifications/inbox` | GOV | P-08 | ✅ | |
 | POST | `/api/v1/notifications/{notification_id}/read` | GOV | P-08 | ✅ | |
 | POST | `/api/v1/admin/super/outbox/dead/{event_id}/replay` | GOV | P-11 | ✅ | |
@@ -2212,7 +2271,7 @@ page.admin.patient.dialog.forceTransfer.title/target/reason/evidence/confirm/war
 | GET | `/api/v1/admin/patients` | PROFILE | P-15a | ✅ | V2.1 新增 |
 | GET | `/api/v1/admin/patients/{patient_id}` | PROFILE | P-15b | ✅ | V2.1 新增 |
 | POST | `/api/v1/admin/patients/{patient_id}/guardians/force-transfer` | PROFILE | P-15b | ✅ | V2.1 新增，super_admin 独占 |
-| GET | `/api/v1/home/dashboard` | BFF | P-02 | ✅ | |
+| GET | `/api/v1/dashboard` | BFF | P-02 | ✅ | |
 | GET | `/api/v1/rescue/tasks/{task_id}/full` | BFF | P-03b | ✅ | |
 | POST | `/api/v1/ws/ticket` | GOV | 全局 `useWs` | ✅ | |
 
@@ -2440,7 +2499,7 @@ server {
 | 项 | 规则 |
 | :--- | :--- |
 | 构建版本 | `VITE_APP_VERSION` 注入全局 `__APP_VERSION__`，`/me` 页面「关于」展示 |
-| 后端版本对照 | 调 `GET /actuator/info`（如开放）或后端 `/api/v1/home/dashboard` 返回版本字段；联调时打印到控制台 |
+| 后端版本对照 | 调 `GET /actuator/info`（如开放）或后端 `/api/v1/dashboard` 返回版本字段；联调时打印到控制台 |
 | 灰度 | 通过 Nginx `map $cookie_gray` 路由到 `index.html.gray`；仅 admin 账号白名单生效 |
 
 ---
@@ -2489,7 +2548,7 @@ server {
 
 | # | 事项 | 影响 | 建议 |
 | :---: | :--- | :--- | :--- |
-| 1 | `/api/v1/home/dashboard` 是否区分管理员视角未在 API §3.7.1 明示 | P-02 字段来源 | 若后端暂不区分，前端退化聚合三次 list 调用取 total |
+| 1 | `/api/v1/dashboard` 对管理员视角的额外字段在 API §3.7.1 已明确（`active_task_count` / `unread_notification_count` 等） | P-02 字段来源 | 若后端暂不区分，前端退化聚合三次 list 调用取 total |
 | 2 | API V2.0 未提供 `/api/v1/admin/users` | 无用户治理页 | 已在 §13 备注声明；待后续版本新增接口时扩展 P-XX |
 | 3 | `/api/v1/clues` 能否按 `review_state` 过滤在 API §3.2.6 需确认 | P-04a 默认过滤 | 若不支持，前端在内存过滤；性能以 cursor 分页保障 |
 | 4 | 批量发号 `/api/v1/tags/batch-generate` 是否校验 super_admin | P-07a 按钮显示 | 前端按 `v-permission="'tag:batch-generate'"` 做双层防御 |
@@ -2608,7 +2667,7 @@ export default {
 本手册 WAHB V2.0 严格对齐 V2 基线文档，覆盖：
 
 1. **全局工程规范**（§1–§12）：硬约束、技术栈、目录、主题、i18n、布局、路由、Pinia、HTTP、WS、权限、公共组件。
-2. **页面规格**（§13–§14）：P-01 登录、P-02 仪表盘、P-03 任务治理、P-04 线索复核、P-05 患者档案（监护视角）、P-06 物资工单、P-07 标签库存、P-08 通知中心、P-09 系统配置、P-10 审计日志、P-11 DEAD 事件、P-12 个人中心、P-13 错误页、**P-14 用户管理**、**P-15 管理员患者档案**，共 15 个功能页面组。
+2. **页面规格**（§13–§14）：P-01 登录、P-02 仪表盘、P-03 任务治理、P-04 线索复核、P-05 患者档案（管理员全局视图，复用 P-15）、P-06 物资工单、P-07 标签库存、P-08 通知中心、P-09 系统配置、P-10 审计日志（含导出）、P-11 DEAD 事件、P-12 个人中心、P-13 错误页、**P-14 用户管理**、**P-15 管理员患者档案**、**P-16 字典管理**，共 **16 个功能页面组**。
 3. **API 覆盖矩阵**（§15）：管理端相关 API 100% 覆盖；家属端/H5 独占接口合理标记未覆盖。
 4. **非功能**（§16–§19）：错误码映射、性能、安全、Nginx + CDN 部署回滚。
 5. **自检与测试**（§20–§21）：一致性自检、跨文档交叉核验、测试金字塔、CI 门禁、PR Checklist。

@@ -2459,6 +2459,41 @@ Response 200:
 
 `low_stock_warning` 判定阈值：配置键 `mat.inventory.low_stock.threshold`（HC-05）
 
+#### 6.3.8 POST /api/v1/material/orders/{order_id}/resolve-exception
+
+描述：管理员对 `EXCEPTION` 工单执行补发或直接作废（SRS AC-07，FR-MAT-004）。
+
+**前置检查**：
+1. 工单当前状态必须为 `EXCEPTION`，否则返回 `E_MAT_4091`（409）。
+2. `action = RESHIP` 时，`tracking_no` + `carrier` 必填；校验 `tracking_no` 全局唯一（同 §6.3.3）。
+3. 幂等键：`idem:req:{requestId}`，TTL 24h（HC-03）。
+
+**事务逻辑**：
+
+```
+BEGIN TRANSACTION
+  order = TagApplyRepository.findByIdForUpdate(orderId)
+  IF order.status != EXCEPTION: THROW E_MAT_4091
+
+  IF action == RESHIP:
+      order.logistics.tracking_no = cmd.trackingNo
+      order.logistics.carrier     = cmd.carrier
+      order.logistics.shipped_at  = now()
+      order.status = SHIPPED
+      publish Outbox: order.exception.reshipped
+  ELSE IF action == VOID:
+      order.status = VOIDED
+      publish Outbox: order.exception.voided
+
+  order.resolve_reason  = cmd.reason
+  order.resolved_by     = currentUserId
+  order.resolved_at     = now()
+  writeAuditLog(action="admin_resolve_exception_order", resource=orderId, risk=HIGH)
+COMMIT
+```
+
+**授权矩阵**：`ADMIN` 与 `SUPER_ADMIN` 均可执行。
+
 ### 6.4 核心流程伪代码
 
 #### 6.4.1 发货出库（标签分配 + 工单流转）

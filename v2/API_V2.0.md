@@ -2262,6 +2262,7 @@ Set-Cookie: entry_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Max-Age=120; 
 | 9 | GET | `/api/v1/tags/batch-generate/jobs/{job_id}` | 查询发号任务 | JWT(ADMIN) |
 | 10 | GET | `/api/v1/tags/inventory/summary` | 库存摘要 | JWT(ADMIN) |
 | 11 | GET | `/api/v1/material/orders` | 工单列表查询 | JWT |
+| 12 | POST | `/api/v1/material/orders/{order_id}/resolve-exception` | 物流异常处置（补发/作废） | JWT(ADMIN) |
 
 ---
 
@@ -2844,6 +2845,69 @@ PENDING_AUDIT → PENDING_SHIP → SHIPPED → RECEIVED
 
 ---
 
+#### 3.4.12 物流异常处置
+
+**描述**：管理员对处于 `EXCEPTION` 状态的工单执行补发（重新发货）或直接作废处置（SRS AC-07，FR-MAT-004；LLD §6.3.8）。
+
+**HTTP 请求**：`POST /api/v1/material/orders/{order_id}/resolve-exception`
+
+**安全性**：需鉴权（JWT），角色 `ADMIN` / `SUPER_ADMIN`
+
+**Path Parameters**：
+
+| 字段名 | 类型 | 描述 |
+| :--- | :--- | :--- |
+| `order_id` | string | 工单 ID |
+
+**Request Body (application/json)**：
+
+```json
+{
+  "action":       "string, 必填, RESHIP | VOID",
+  "reason":       "string, 必填, 10-200 字",
+  "tracking_no":  "string, action=RESHIP 时必填, 6-32",
+  "carrier":      "string, action=RESHIP 时必填, SF/YTO/ZTO/JD/EMS/OTHER"
+}
+```
+
+**状态机跃迁**：
+
+| `action` | 前置状态 | 目标状态 |
+| :--- | :--- | :--- |
+| `RESHIP` | `EXCEPTION` | `SHIPPED`（补发新物流） |
+| `VOID` | `EXCEPTION` | `VOIDED` |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260419_090",
+  "data": {
+    "order_id":   "6001",
+    "status":     "SHIPPED",
+    "resolved_at":"2026-04-22T10:00:00Z",
+    "resolved_by":"admin_user_id"
+  }
+}
+```
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :--- | :--- |
+| `E_MAT_4091` | 409 | 工单状态不为 `EXCEPTION` |
+| `E_MAT_4224` | 422 | `RESHIP` 时补发物流单号重复 / 库存不足 |
+| `E_MAT_4226` | 422 | `action` 枚举值非法或 `reason` 为空 |
+| `E_AUTH_4031` | 403 | 非 ADMIN 角色 |
+
+**Outbox 事件**：
+- `RESHIP`：`order.exception.reshipped`
+- `VOID`：`order.exception.voided`
+
+---
+
 ### 3.5 AI 协同支持域（AI）
 
 > **底层设计基线**：LLD V2.0 §7（数据模型 `ai_session` / `patient_memory_note` / `vector_store` / `ai_quota_ledger`）、DBD V2.0 §4.10 ~ §4.13
@@ -3240,6 +3304,7 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 | 18 | POST | `/api/v1/admin/users/{user_id}/disable` | 禁用用户 | JWT(ADMIN) |
 | 19 | POST | `/api/v1/admin/users/{user_id}/enable` | 启用用户 | JWT(ADMIN) |
 | 20 | DELETE | `/api/v1/admin/users/{user_id}` | 逻辑删除用户 | JWT(ADMIN) |
+| 21 | GET | `/api/v1/admin/logs/export` | 审计日志导出（CSV/JSON） | JWT(SUPER_ADMIN) |
 
 ---
 
@@ -4199,6 +4264,41 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 | `E_AUTH_4031` | 403 | 缺少 `CONFIRM_3` |
 
 **Outbox 事件**：`user.deactivated`。
+
+---
+
+#### 3.6.21 审计日志导出
+
+**描述**：超级管理员按过滤条件导出结构化审计日志（CSV 或 JSON，单次上限 10,000 条），满足 FR-GOV-007 合规数据导出要求。
+
+**HTTP 请求**：`GET /api/v1/admin/logs/export`
+
+**安全性**：需鉴权（JWT），角色 `SUPER_ADMIN`
+
+**Query Parameters**（全部可选，至少提供一个时间限制）：
+
+| 字段名 | 类型 | 必填 | 默认 | 描述 |
+| :--- | :--- | :---: | :--- | :--- |
+| `start_at` | string(ISO8601) | **是** | — | 起始时间（最早不超过当前时间 180 天） |
+| `end_at` | string(ISO8601) | **是** | — | 结束时间；与 `start_at` 间隔不超过 31 天 |
+| `operator_id` | string | 否 | — | 按操作人过滤 |
+| `action` | string | 否 | — | 按动作类型过滤 |
+| `resource_type` | string | 否 | — | 按资源类型过滤 |
+| `format` | string | 否 | `json` | 响应格式：`json` / `csv` |
+
+**Response**：
+
+- `format=json`：HTTP 200，`Content-Type: application/json`，响应体结构与 §3.6.10 相同（`items[]` 无分页）
+- `format=csv`：HTTP 200，`Content-Type: text/csv; charset=utf-8`，`Content-Disposition: attachment; filename="audit_logs_{start_at}_{end_at}.csv"`
+- 超过 10,000 条时返回 `E_GOV_4094`（422），提示缩短时间范围
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :--- | :--- |
+| `E_AUTH_4031` | 403 | 非 SUPER_ADMIN |
+| `E_GOV_4094` | 422 | 结果超 10,000 条 |
+| `E_GOV_4095` | 422 | 时间范围超 31 天或超出 180 天归档窗口 |
 
 ---
 

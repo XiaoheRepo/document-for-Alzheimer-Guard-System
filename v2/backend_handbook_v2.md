@@ -1386,6 +1386,8 @@ Action 白名单映射（对齐 API V2.0 §6）：
 | `admin_disable_user` | A3 | `POST /api/v1/admin/users/{user_id}/disable` | `CONFIRM_2` | `SUPER_ADMIN` 目标永拒；自身目标永拒 |
 | `admin_enable_user` | A2 | `POST /api/v1/admin/users/{user_id}/enable` | `CONFIRM_1` | 授权矩阵同 disable |
 | `admin_deactivate_user` | A4 | `DELETE /api/v1/admin/users/{user_id}` | `CONFIRM_3` | 行政级终态；前置检查主监护 / 未终态任务
+| `admin_resolve_exception_order` | A2 | `POST /api/v1/material/orders/{order_id}/resolve-exception` | `CONFIRM_2` | 补发（RESHIP）或作废（VOID）`EXCEPTION` 工单；`ADMIN` / `SUPER_ADMIN` 均可 |
+| `admin_export_audit_logs` | A3 | `GET /api/v1/admin/logs/export` | `CONFIRM_2` | 仅 `SUPER_ADMIN`；单次上限 10,000 条；写入审计"导出日志"事件 |
 
 ### 12.2 匿名链路安全（必须）
 

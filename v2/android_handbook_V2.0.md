@@ -1439,7 +1439,7 @@ class AiSseClient @Inject constructor(private val factory: EventSources.Factory)
 
 1. 应用在前台：**忽略**系统通知栏，直接通过 WS 更新 UI；避免重复提示。
 2. 应用在后台：走 Notification Channel（`mshj_task` / `mshj_clue` / `mshj_system`）；点击进入深链。
-3. Token 注册 / 注销端点以 **BDD §推送接入章节**为准（基线 API V2.0 未独立列出 `users/me/push-tokens`，作为跨文档差距登记）。
+3. Token 注册 / 注销调用 `POST /api/v1/users/me/push-tokens`（API §3.8.5.1）与 `DELETE /api/v1/users/me/push-tokens/{push_token_id}`（API §3.8.5.2）；请求体 `platform=ANDROID_FCM|ANDROID_HMS|ANDROID_MIPUSH` 按设备指纹识别，`device_id` 复用 `Settings.Secure.ANDROID_ID`。
 4. 华为 / 小米 / vivo / OPPO 通过 `push-unification` 库分发；不足时回退 FCM；**禁止**回退短信（HC-Channel）。
 
 ### 11.6 WorkManager 补洞
@@ -1448,7 +1448,7 @@ class AiSseClient @Inject constructor(private val factory: EventSources.Factory)
 | :--- | :--- | :--- |
 | `RealtimeReconcileWorker` | 网络恢复 / 回前台 / 每 15 min 心跳 | 对 `task` / `clue` / `notify` 调用 `GET …?after_version=<local>` 全量拉齐 |
 | `OutboxReplayWorker` | 网络恢复 / 工单 Pending 存在 | 复用原 `X-Request-Id` 重放未成功的写请求（§12.5） |
-| `AiMessageReconcileWorker` | 恢复前台 + 存在进行中 SSE | 由 `MhSseClient` 自行重连；若 token 流未完成，客户端发起新一轮 `POST /api/v1/ai/sessions/{id}/messages`（基线未提供续读端点） |
+| `AiMessageReconcileWorker` | 恢复前台 + 存在进行中 SSE | 由 `MhSseClient` 自行重连；对已中断会话调用 `GET /api/v1/ai/sessions/{id}/messages?after_cursor=last_seq` (API §3.8.1.4) 拉取漏接消息；若需主动中止则调 `POST /api/v1/ai/sessions/{id}/messages/{message_id}/cancel`（API §3.8.1.5） |
 
 ### 11.7 回前台 / 断网恢复的统一编排
 
@@ -1970,8 +1970,8 @@ fun MhRoot(content: @Composable () -> Unit) {
 | MH-ORD-03 | 发起工单 | `OrderCreate` | `feature-material` | — | `POST /api/v1/material/orders` | FR-MAT-002 |
 | MH-ORD-04 | 确认签收 / 取消 | `OrderReceive`（详情内动作） | `feature-material` | — | `POST /api/v1/material/orders/{order_id}/receive`、`POST /api/v1/material/orders/{order_id}/cancel` | FR-MAT-003 |
 | MH-NOTI-01 | 消息中心 | `NotificationTab` | `feature-notification` | 通知 | `GET /api/v1/notifications/inbox`、`POST /api/v1/notifications/{notification_id}/read`（基线无批量已读端点，前端循环调用单条） | FR-GOV-008 |
-| MH-AI-01 | AI 对话入口 | `AiChatLauncher` | `feature-ai` | — | `POST /api/v1/ai/sessions`（每次进入创建/续接）；**会话历史列表**在 API V2.0 基线未定义，App 端以本地持久化 + 服务端 session_id 维护（V2.x 如开放再接入） | FR-AI-001 |
-| MH-AI-02 | AI 对话（LUI 主页） | `AiChat` | `feature-ai` | 麦克风（可选） | `POST /api/v1/ai/sessions`、`POST /api/v1/ai/sessions/{session_id}/messages`（SSE） | FR-AI-001/002 |
+| MH-AI-01 | AI 对话入口 / 历史会话列表 | `AiChatLauncher` | `feature-ai` | — | `GET /api/v1/ai/sessions`（API §3.8.1.1，历史列表）、`POST /api/v1/ai/sessions`（新建/续接）、`DELETE /api/v1/ai/sessions/{id}`（§3.8.1.3，归档） | FR-AI-001 |
+| MH-AI-02 | AI 对话（LUI 主页） | `AiChat` | `feature-ai` | 麦克风（可选） | `POST /api/v1/ai/sessions`、`POST /api/v1/ai/sessions/{session_id}/messages`（SSE）、`GET /api/v1/ai/sessions/{id}/messages`（§3.8.1.4 续传）、`POST /api/v1/ai/sessions/{id}/messages/{mid}/cancel`（§3.8.1.5 取消） | FR-AI-001/002 |
 | MH-AI-03 | 工具意图确认卡 | `AiIntentConfirm`（Chat 内子组件） | `feature-ai` | — | `POST /api/v1/ai/sessions/{session_id}/intents/{intent_id}/confirm` | FR-AI-003（HC-01） |
 | MH-AI-05 | AI 海报生成 | `AiPoster` | `feature-ai` | 相册（保存） | `POST /api/v1/ai/poster` | FR-AI-004 |
 | MH-AI-06 | AI 反馈 | `AiFeedback`（Chat 内） | `feature-ai` | — | `POST /api/v1/ai/sessions/{session_id}/feedback` | FR-AI-005 |
@@ -1979,8 +1979,8 @@ fun MhRoot(content: @Composable () -> Unit) {
 | MH-ME-02 | 资料查看（只读） | `MeProfile` | `feature-me` | — | `GET /api/v1/users/me`（基线未开放 `PUT /api/v1/users/me`；个人资料修改 V2.x 待补） | FR-GOV-003 |
 | MH-ME-03 | 语言 / 主题 / 大字 | `MeSettings` | `feature-me` | — | — | NFR-UX-002 |
 | MH-ME-04 | 隐私中心 | `MePrivacy` | `feature-me` | — | — | NFR-SEC-004 |
-| MH-ME-05 | 关于 / 版本 | `MeAbout` | `feature-me` | — | 读取 `BuildConfig.VERSION_NAME`（基线无 `/meta/version`） | NFR-OPS-001 |
-| MH-ME-06 | 推送令牌注册（系统页 / 后台） | — | `feature-me` | 通知 | 以 **BDD §推送接入章节**为准（基线 API V2.0 未独立列出 `push-tokens` 端点；需后端开放后接入，暂登记为跨文档差距） | NFR-NOTI-001 |
+| MH-ME-05 | 关于 / 版本 / 强升 | `MeAbout` | `feature-me` | — | `GET /api/v1/meta/version?platform=ANDROID`（API §3.8.6.1）；返回 `min_compatible_version` / `force_upgrade` 驱动 `MhVersionGuardDialog` | NFR-OPS-001 |
+| MH-ME-06 | 推送令牌注册（系统页 / 后台） | — | `feature-me` | 通知 | `POST /api/v1/users/me/push-tokens`（API §3.8.5.1）注册；`DELETE /api/v1/users/me/push-tokens/{id}`（§3.8.5.2）注销；退出账号链式调用 `POST /api/v1/auth/logout`（§3.8.7.1）带 `push_token_id` | NFR-NOTI-001 |
 | MH-ERR-01 | 网络错误 / 空态 / 403 / 404 | `ErrorPage` | `feature-common` | — | — | NFR-UX-001 |
 
 > **说明**：已删除 `MH-AI-04 AI 记忆笔记`（基线未提供 `/ai/memory-notes` 端点），改由会话内上下文承载；如 V2.x 开放再独立建页。
@@ -2296,7 +2296,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
   - 外观：`PUT /api/v1/patients/{patient_id}/appearance`
 
 - **幂等**：写接口必带 `X-Request-Id`。
-- **头像**：走 `POST /api/v1/media/upload`（表单 `multipart`） → 获取 `avatar_url` 再提交。
+- **头像**：走 `POST /api/v1/media/upload-sign?scene=USER_AVATAR`（API §3.8.3.1）拿到 OSS presigned URL → 客户端 `PUT` 直传 → 将返回的 `public_url` 作为 `avatar_url` 提交。
 
 ### 17.4 MH-PAT-03 围栏设置
 
@@ -2661,7 +2661,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
   | 备注 | ≤ 256 字 |
 
 - **接口**：
-  1. 照片先通过后端签发的上传通道上传（以 **BDD §附件上传** 为准；基线 API V2.0 未独立列出 `/media/upload`，由 BDD 章节决定是 presigned URL 直传还是 `/api/v1/oss/upload`）
+  1. 照片先调用 `POST /api/v1/media/upload-sign?scene=CLUE_PHOTO`（API §3.8.3.1）获取 OSS presigned URL，再由客户端 `PUT` 直传，取返回 `public_url`
   2. 主体 `POST /api/v1/clues/report`
 
   ```json
@@ -2988,8 +2988,8 @@ AI 域包含五种界面产出：
 ### 22.3 MH-AI-01 AI 会话列表
 
 - **路由**：`AiSessionList`
-- **API**：**基线未提供会话列表端点**；当前以本地 Room 持久化会话元信息（`session_id` / 首条摘要 / `updated_at`）为准；进入会话时调用 `POST /api/v1/ai/sessions` 创建或续接。
-- **项**：本地缓存的会话标题（首轮提问摘要）、更新时间、未读徽标、置顶标记；删除仅清本地记录（服务端基线未提供 `DELETE /api/v1/ai/sessions/{id}`）。
+- **API**：`GET /api/v1/ai/sessions`（API §3.8.1.1，服务端列表）+ 本地 Room 缓存（离线展示）；进入会话时调用 `POST /api/v1/ai/sessions` 创建或续接。
+- **项**：会话标题（首轮提问摘要）、更新时间、未读徽标、置顶标记；删除调用 `DELETE /api/v1/ai/sessions/{id}`（API §3.8.1.3，服务端软归档 + 本地标记 `ARCHIVED`）。
 - **操作**：【+ 新建会话】 → `POST /api/v1/ai/sessions` → 跳 `AiChat(session_id)`。
 
 ### 22.4 MH-AI-02 AI 对话（LUI 主入口）
@@ -3161,9 +3161,9 @@ AI 域包含五种界面产出：
 | MH-ORD-02 | `GET /api/v1/material/orders?order_id={order_id}` |
 | MH-ORD-03 | `POST /api/v1/material/orders` |
 | MH-ORD-04 | `POST /api/v1/material/orders/{order_id}/receive` · `POST /api/v1/material/orders/{order_id}/cancel` |
-| MH-NOTI-01 | `GET /api/v1/notifications/inbox` · `POST /api/v1/notifications/{notification_id}/read`（基线无批量已读；前端循环调用） |
-| MH-AI-01 | `POST /api/v1/ai/sessions`（创建/续接，session_id 由客户端持久化） |
-| MH-AI-02 | `POST /api/v1/ai/sessions/{session_id}/messages`（SSE 流式） |
+| MH-NOTI-01 | `GET /api/v1/notifications/inbox` · `POST /api/v1/notifications/{notification_id}/read` · `POST /api/v1/notifications/read-all`（§3.8.4.1 全部已读） |
+| MH-AI-01 | `GET /api/v1/ai/sessions`（§3.8.1.1）· `POST /api/v1/ai/sessions`（创建/续接）· `DELETE /api/v1/ai/sessions/{id}`（§3.8.1.3） |
+| MH-AI-02 | `POST /api/v1/ai/sessions/{session_id}/messages`（SSE 流式）· `GET /api/v1/ai/sessions/{id}/messages`（§3.8.1.4 续传）· `POST .../messages/{mid}/cancel`（§3.8.1.5） |
 | MH-AI-03 | `POST /api/v1/ai/sessions/{session_id}/intents/{intent_id}/confirm` |
 | MH-AI-05 | `POST /api/v1/ai/poster` |
 | MH-AI-06 | `POST /api/v1/ai/sessions/{session_id}/feedback` |
@@ -3171,8 +3171,8 @@ AI 域包含五种界面产出：
 | MH-ME-02 | `GET /api/v1/users/me`（只读；基线未开放 PUT /users/me） |
 | MH-ME-03 | —— |
 | MH-ME-04 | —— |
-| MH-ME-05 | 本地读取 `BuildConfig.VERSION_NAME` |
-| MH-ME-06 | 以 **BDD §推送接入**为准（基线 API V2.0 未列出 push-tokens 端点，登记为跨文档差距） |
+| MH-ME-05 | `GET /api/v1/meta/version?platform=ANDROID`（§3.8.6.1 强升策略） |
+| MH-ME-06 | `POST /api/v1/users/me/push-tokens`（§3.8.5.1）· `DELETE /api/v1/users/me/push-tokens/{id}`（§3.8.5.2）· `POST /api/v1/auth/logout`（§3.8.7.1） |
 | MH-ERR-01 | —— |
 
 ### 23.2 矩阵 B：API → 页面
@@ -3225,13 +3225,19 @@ AI 域包含五种界面产出：
 | POST | `/api/v1/ai/sessions/{session_id}/intents/{intent_id}/confirm` | MH-AI-03 |
 | POST | `/api/v1/ai/sessions/{session_id}/feedback` | MH-AI-06 |
 | POST | `/api/v1/ai/poster` | MH-AI-05 |
+| GET | `/api/v1/ai/sessions` | MH-AI-01 |
+| GET | `/api/v1/ai/sessions/{id}` | MH-AI-01（详情确认） |
+| DELETE | `/api/v1/ai/sessions/{id}` | MH-AI-01 |
+| GET | `/api/v1/ai/sessions/{id}/messages` | MH-AI-02（续传/多端同步） |
+| POST | `/api/v1/ai/sessions/{id}/messages/{mid}/cancel` | MH-AI-02 |
+| POST | `/api/v1/media/upload-sign` | MH-PAT-02（头像）、MH-CLUE-02（线索照片）、MH-AI-05（海报背景） |
+| POST | `/api/v1/notifications/read-all` | MH-NOTI-01 |
+| POST | `/api/v1/users/me/push-tokens` | MH-ME-06（启动 / FCM token refresh） |
+| DELETE | `/api/v1/users/me/push-tokens/{id}` | MH-ME-06（退出 / 授权关闭） |
+| GET | `/api/v1/meta/version` | MH-SPL-01（启动强升检查）、MH-ME-05 |
+| POST | `/api/v1/auth/logout` | MH-ME-06（退出） |
 
-> **跨文档差距（登记给 API V2.1 补齐）**：
-> - `POST /api/v1/media/upload`（或 presigned URL 接口）：患者头像 / 线索附件上传所需，基线 API V2.0 未单列；当前以 **BDD §附件上传** 为准；
-> - `POST /api/v1/users/me/push-tokens` / `DELETE /api/v1/users/me/push-tokens/{id}`：FCM / 华为 / 小米推送 token 注册所需，基线未列出；
-> - `GET /api/v1/ai/sessions`、`GET /api/v1/ai/sessions/{id}`、`DELETE /api/v1/ai/sessions/{id}`、`GET /api/v1/ai/sessions/{id}/messages`、`POST …/messages/{msg_id}/cancel`：AI 会话历史列表 / 取消能力，基线未列出；本手册当前以本地持久化 + session_id 承载历史；
-> - `GET /api/v1/meta/version`：强升/版本守门；改为本地读取 `BuildConfig.VERSION_NAME` + `GET /api/v1/admin/configs` 中的 `min_client_version` 阈值比对；
-> - 批量已读 `POST /api/v1/notifications/read-all`：基线未列出，前端循环调用单条 `/read` 端点替代。
+> **说明**：API V2.1 增量端点（§3.8）已全部覆盖家属端业务场景；前一版手册登记的 `/media/upload` / `/users/me/push-tokens` / AI 会话管理 / `/meta/version` / `/notifications/read-all` 跨文档差距已随 API V2.1 市场化，本手册不再维护独立 gap 清单。
 
 ### 23.3 管理员专属接口（显式排除）
 

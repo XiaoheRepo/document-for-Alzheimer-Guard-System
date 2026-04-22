@@ -4429,6 +4429,608 @@ data: {"code": "E_AI_5031", "message": "AI 服务暂时不可用"}
 
 ---
 
+## 3.8 V2.1 基线增量接口（补齐跨文档差距）
+
+> **背景**：手册评审 Round 1 发现三端开发手册存在若干实现必需但 V2.0 基线未单列的端点（AI 会话管理、H5 公开救援信息、附件上传、推送 token、通知批量已读、客户端版本、认证登出）。本节作为 V2.1 基线增量正式纳入契约，补齐这些能力；字段与既有端点风格一致，错误码沿用 §2 约定。
+>
+> **接口归属**：AI 增量属 `FAMILY` / `feature-ai`；公开域增量属 H5 匿名；附件/推送/版本/登出属三端共享。
+>
+> **安全与幂等**：所有 POST / DELETE 写接口遵循 §1.6；所有接口遵循 §1.2 Header 规范（`X-Request-Id` / `X-Trace-Id` 强制）。
+
+### 3.8.1 AI 会话管理增量
+
+#### 3.8.1.1 查询 AI 会话列表
+
+**描述**：查询当前用户的 AI 会话列表（FR-AI-001 扩展，DBD §2.5.1 `ai_session`）。
+
+**HTTP 请求**：`GET /api/v1/ai/sessions`
+
+**安全性**：需鉴权（JWT），角色 `FAMILY`
+
+**Query Parameters**：
+
+| 字段名 | 类型 | 必填 | 默认值 | 描述 |
+| :--- | :--- | :---: | :--- | :--- |
+| `patient_id` | string | 否 | — | 按患者过滤 |
+| `task_id` | string | 否 | — | 按任务过滤 |
+| `status` | string | 否 | — | 枚举：`ACTIVE` / `ARCHIVED` |
+| `cursor` | string | 否 | — | 分页游标 |
+| `page_size` | int | 否 | `20` | 每页条数（≤ 100） |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_001",
+  "data": {
+    "items": [
+      {
+        "session_id":      "sess_001",
+        "patient_id":      "1001",
+        "task_id":         "8848",
+        "title":           "如何提高线索上报效率？",
+        "status":          "ACTIVE",
+        "last_message_at": "2026-04-20T10:15:00Z",
+        "message_count":   12,
+        "unread_count":    0,
+        "pinned":          false,
+        "created_at":      "2026-04-19T10:00:00Z",
+        "version":         7
+      }
+    ],
+    "page_size":   20,
+    "next_cursor": "eyJsYXN0X21lc3NhZ2VfYXQiOiIyMDI2LTA0LTIwVDEwOjE1OjAwWiIsImlkIjoic2Vzc18wMDEifQ==",
+    "has_next":    false
+  }
+}
+```
+
+**异常响应**：`E_GOV_4011`（401 未登录）。
+
+#### 3.8.1.2 查询 AI 会话详情
+
+**描述**：查询单个 AI 会话的元信息（不含完整消息体，消息通过 §3.8.1.4 拉取）。
+
+**HTTP 请求**：`GET /api/v1/ai/sessions/{session_id}`
+
+**安全性**：需鉴权（JWT），角色 `FAMILY`；仅会话所有者可访问。
+
+**Path Variables**：
+
+| 字段名 | 类型 | 必填 | 描述 |
+| :--- | :--- | :---: | :--- |
+| `session_id` | string | 是 | 会话 ID |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_002",
+  "data": {
+    "session_id":      "sess_001",
+    "user_id":         "2001",
+    "patient_id":      "1001",
+    "task_id":         "8848",
+    "title":           "如何提高线索上报效率？",
+    "status":          "ACTIVE",
+    "last_message_at": "2026-04-20T10:15:00Z",
+    "message_count":   12,
+    "token_usage": {
+      "prompt_tokens":     1200,
+      "completion_tokens": 1800,
+      "total_tokens":      3000,
+      "model_name":        "qwen-max"
+    },
+    "version":    7,
+    "created_at": "2026-04-19T10:00:00Z",
+    "updated_at": "2026-04-20T10:15:00Z"
+  }
+}
+```
+
+**异常响应**：`E_AI_4041` (404)、`E_AI_4030` (403)。
+
+#### 3.8.1.3 归档 AI 会话
+
+**描述**：将 AI 会话置为 `ARCHIVED` 状态（软删除；90 天后由归档任务清理，DBD §5.2）。
+
+**HTTP 请求**：`DELETE /api/v1/ai/sessions/{session_id}`
+
+**安全性**：需鉴权（JWT），角色 `FAMILY`；仅会话所有者可操作；幂等（重复归档返回成功）。
+
+**Headers**：`X-Request-Id`（必填，幂等键）、`X-Trace-Id`（必填）。
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_003",
+  "data": {
+    "session_id":  "sess_001",
+    "status":      "ARCHIVED",
+    "archived_at": "2026-04-20T10:30:00Z"
+  }
+}
+```
+
+**异常响应**：`E_AI_4041` (404)、`E_AI_4030` (403)。
+
+#### 3.8.1.4 拉取会话消息（续传）
+
+**描述**：按游标拉取会话历史消息（用于 SSE 断连续传 / 前台恢复 / 多端同步，FR-AI-001 扩展）。
+
+**HTTP 请求**：`GET /api/v1/ai/sessions/{session_id}/messages`
+
+**安全性**：需鉴权（JWT），角色 `FAMILY`；仅会话所有者可访问。
+
+**Query Parameters**：
+
+| 字段名 | 类型 | 必填 | 默认值 | 描述 |
+| :--- | :--- | :---: | :--- | :--- |
+| `after_cursor` | string | 否 | — | 拉取游标之后的消息；为空时从头 |
+| `direction` | string | 否 | `FORWARD` | `FORWARD`（新 → 旧反向尾部增量） / `BACKWARD`（向前翻页） |
+| `page_size` | int | 否 | `50` | 每页条数（≤ 200） |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_004",
+  "data": {
+    "items": [
+      {
+        "message_id":  "msg_101",
+        "role":        "user",
+        "content":     "患者今天情绪不稳定，怎么办？",
+        "content_type":"text",
+        "created_at":  "2026-04-20T10:10:00Z",
+        "seq":         10
+      },
+      {
+        "message_id":  "msg_102",
+        "role":        "assistant",
+        "content":     "建议首先保持平静……",
+        "content_type":"text",
+        "tool_calls":  [],
+        "created_at":  "2026-04-20T10:10:08Z",
+        "seq":         11,
+        "completion_status": "FINAL"
+      }
+    ],
+    "page_size":   50,
+    "next_cursor": "eyJzZXEiOjExfQ==",
+    "has_next":    false,
+    "server_seq":  11
+  }
+}
+```
+
+> `seq` 为服务端单调递增序号（对应 DBD `ai_session.messages` JSONB 数组下标 + 1）；客户端据此判断是否存在漏接消息。
+
+**异常响应**：`E_AI_4041` (404)、`E_AI_4030` (403)。
+
+#### 3.8.1.5 取消流式消息
+
+**描述**：主动取消一条正在流式输出的 assistant 消息（SSE 断开后兜底；FR-AI-001 扩展）。
+
+**HTTP 请求**：`POST /api/v1/ai/sessions/{session_id}/messages/{message_id}/cancel`
+
+**安全性**：需鉴权（JWT），角色 `FAMILY`；写接口幂等（按 `X-Request-Id` 去重）。
+
+**Headers**：`X-Request-Id`（必填）、`X-Trace-Id`（必填）。
+
+**Request Body**：空。
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_005",
+  "data": {
+    "message_id":        "msg_102",
+    "completion_status": "CANCELLED",
+    "cancelled_at":      "2026-04-20T10:10:15Z"
+  }
+}
+```
+
+> 若消息已完成（`FINAL` / `FAILED`），返回 200 幂等响应，`completion_status` 反映当前真实态，不报错。
+
+**异常响应**：`E_AI_4041` (404)、`E_AI_4030` (403)。
+
+---
+
+### 3.8.2 公开域增量（H5 线索端）
+
+#### 3.8.2.1 公开救援信息视图
+
+**描述**：H5 线索端在路人持有 `entry_token` 访问 `P-03 救援信息全量展示页` 时调用，返回患者脱敏公开视图 + 当前关联任务的救援信息（FR-CLUE-004，对齐 H5HB §14.3）。
+
+**HTTP 请求**：`GET /api/v1/public/patients/{short_code}/rescue-info`
+
+**安全性**：匿名；需携带有效 `entry_token` Cookie（由 §3.2.1 / §3.2.2 签发，TTL 120s）；网关按 IP + `entry_token` 双限流。
+
+**Path Variables**：
+
+| 字段名 | 类型 | 必填 | 描述 |
+| :--- | :--- | :---: | :--- |
+| `short_code` | string | 是 | 患者短码（由 `entry_token` 解密校验一致性） |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_010",
+  "data": {
+    "patient": {
+      "short_code":     "P8K2M",
+      "display_name":   "张**",
+      "age_range":      "70-79",
+      "gender":         "MALE",
+      "avatar_url":     "https://oss.example.com/avatars/masked/1001.jpg",
+      "appearance_summary": "身高 170cm 左右；走失时穿蓝色外套；左手腕有老年斑",
+      "medical_note":       "患阿尔兹海默症 5 年；对青霉素过敏",
+      "language_tags":      ["zh-CN", "普通话", "北京话"]
+    },
+    "rescue": {
+      "task_id":       "8848",
+      "state":         "ACTIVE",
+      "missing_at":    "2026-04-20T06:30:00Z",
+      "last_seen":     "2026-04-20T08:10:00Z",
+      "last_area":     "北京市海淀区中关村南大街",
+      "reward_note":   "感谢您的帮助，家属愿意致谢"
+    },
+    "emergency_contact": {
+      "display_name": "家属张先生",
+      "masked_phone": "138****5678"
+    },
+    "entry_token_ttl_sec": 96
+  }
+}
+```
+
+> **脱敏规则**：
+> - `display_name` 保留姓 + `**`；
+> - `age_range` 按 10 岁分段；
+> - `masked_phone` 仅保留前 3 + 后 4 位；`email` / 完整地址不返回；
+> - 患者非 `MISSING` / `MISSING_PENDING` / `SUSTAINED` 状态时，`rescue` 返回 `null`，页面退化为"仅发现标识"路径（H5HB §P-07）。
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_CLUE_4011` | 401 | `entry_token` 缺失或过期 |
+| `E_CLUE_4041` | 404 | `short_code` 不存在或标签已 `VOID` |
+| `E_CLUE_4291` | 429 | 同 IP 访问过频 |
+
+#### 3.8.2.2 CAPTCHA 下发
+
+**描述**：H5 手动短码页（P-02）与匿名上报页（P-04/P-05）在命中风控阈值时，弹出滑块校验并调此端点获取 `captcha_token`（API §3.2.2 / §3.2.3 请求体所需）。
+
+**HTTP 请求**：`POST /api/v1/public/captcha/issue`
+
+**安全性**：匿名；按 IP + 设备指纹限流。
+
+**Request Body (application/json)**：
+
+```json
+{
+  "scene":              "MANUAL_ENTRY | CLUE_REPORT",
+  "device_fingerprint": "string, 必填, ≤128",
+  "challenge_result":   {
+    "type":     "SLIDER",
+    "trace":    "string, 滑动轨迹加密串",
+    "duration_ms": 1280
+  }
+}
+```
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_011",
+  "data": {
+    "captcha_token": "ct_eyJhbGciOi...",
+    "expires_at":    "2026-04-20T12:05:00Z",
+    "usage_scene":   "MANUAL_ENTRY"
+  }
+}
+```
+
+> `captcha_token` TTL = 300s，一次性消耗；业务端点（§3.2.2 / §3.2.3）需把该 token 放入 body `captcha_token` 字段；校验由 `risk-service` 实施。
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_CLUE_4001` | 400 | `challenge_result` 校验失败（需重新滑动） |
+| `E_CLUE_4291` | 429 | 频率超限 |
+
+---
+
+### 3.8.3 附件上传凭证
+
+#### 3.8.3.1 申请对象存储直传凭证
+
+**描述**：三端在头像、患者外观照、线索照片、海报等场景需上传图片时调此端点，获得阿里云 OSS presigned URL 后直传，再把白名单 URL 回填至业务端点（FR-PRO-002 / FR-CLUE-001 支撑）。
+
+**HTTP 请求**：`POST /api/v1/media/upload-sign`
+
+**安全性**：需鉴权（JWT）；按用户 + IP 限流。
+
+**Request Body (application/json)**：
+
+```json
+{
+  "scene":        "PATIENT_AVATAR | PATIENT_APPEARANCE | CLUE_PHOTO | POSTER_BG | USER_AVATAR",
+  "file_name":    "string, 必填, ≤200, 由客户端生成",
+  "content_type": "image/jpeg | image/png | image/webp",
+  "size_bytes":   1024768,
+  "request_time": "string, 必填, ISO-8601"
+}
+```
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_020",
+  "data": {
+    "object_key":    "media/clue/2026/04/20/u2001_8a1f2c.jpg",
+    "upload_url":    "https://mh-prod.oss-cn-beijing.aliyuncs.com/media/...?Expires=1745150400&OSSAccessKeyId=...&Signature=...",
+    "method":        "PUT",
+    "headers": {
+      "Content-Type": "image/jpeg",
+      "x-oss-meta-scene": "CLUE_PHOTO"
+    },
+    "public_url":    "https://cdn.example.com/media/clue/2026/04/20/u2001_8a1f2c.jpg",
+    "expires_at":    "2026-04-20T12:10:00Z",
+    "max_size_bytes": 10485760,
+    "scene":         "CLUE_PHOTO"
+  }
+}
+```
+
+> **上传流程**：客户端拿到 `upload_url` 后直接对 OSS 发起 `PUT`，成功后把 `public_url` 作为白名单 URL 回填至业务端点（如 §3.2.3 `photo_urls[]`、§3.3.3 `appearance_photos[]`）；服务端不代传二进制。
+
+**异常响应**：
+
+| 错误码 | HTTP | 触发条件 |
+| :--- | :---: | :--- |
+| `E_GOV_4001` | 400 | `scene` / `content_type` 不在白名单 |
+| `E_GOV_4131` | 413 | `size_bytes` 超 `max_size_bytes` |
+| `E_GOV_4291` | 429 | 上传配额超限 |
+
+---
+
+### 3.8.4 通知批量已读
+
+#### 3.8.4.1 标记通知全部已读
+
+**描述**：批量标记通知为已读，作为 §3.6.12 的批量版本（三端"全部已读"按钮消费）。
+
+**HTTP 请求**：`POST /api/v1/notifications/read-all`
+
+**安全性**：需鉴权（JWT）；幂等（按 `X-Request-Id` 去重）。
+
+**Request Body (application/json)**：
+
+```json
+{
+  "type":         "string, 可选, 枚举见 §3.6.11；空表示全类型",
+  "before_time":  "string, 可选, ISO-8601；仅标记该时刻之前的通知",
+  "request_time": "string, 必填, ISO-8601"
+}
+```
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_030",
+  "data": {
+    "affected_count": 23,
+    "read_at":        "2026-04-20T11:00:00Z"
+  }
+}
+```
+
+**异常响应**：`E_GOV_4011` (401)。
+
+---
+
+### 3.8.5 推送令牌注册
+
+#### 3.8.5.1 注册推送令牌
+
+**描述**：家属 Android / Web 管理端 / H5（PWA）注册 FCM / HMS / MiPush / Web Push 等系统推送令牌，使后端 `notification-service` 能定向下发（HC-05，对齐 HC-08 四通道）。
+
+**HTTP 请求**：`POST /api/v1/users/me/push-tokens`
+
+**安全性**：需鉴权（JWT）；按 `(user_id, device_id)` 去重写入；幂等（重复注册仅更新 `last_active_at`）。
+
+**Request Body (application/json)**：
+
+```json
+{
+  "platform":    "ANDROID_FCM | ANDROID_HMS | ANDROID_MIPUSH | IOS_APNS | WEB_PUSH",
+  "device_id":   "string, 必填, ≤128, 客户端稳定设备标识",
+  "push_token":  "string, 必填, ≤512",
+  "app_version": "string, 必填, e.g. 2.1.0",
+  "os_version":  "string, 可选, e.g. Android 14",
+  "device_model":"string, 可选, ≤64",
+  "locale":      "zh-CN | en-US",
+  "request_time":"string, 必填, ISO-8601"
+}
+```
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_040",
+  "data": {
+    "push_token_id":  "pt_9001",
+    "registered_at":  "2026-04-20T11:05:00Z",
+    "last_active_at": "2026-04-20T11:05:00Z"
+  }
+}
+```
+
+**异常响应**：`E_GOV_4001` (400)、`E_GOV_4011` (401)。
+
+#### 3.8.5.2 注销推送令牌
+
+**描述**：用户主动登出、或切换账号、或关闭通知权限时，客户端注销推送令牌。
+
+**HTTP 请求**：`DELETE /api/v1/users/me/push-tokens/{push_token_id}`
+
+**安全性**：需鉴权（JWT）；仅 token 所有者可操作；幂等。
+
+**Path Variables**：
+
+| 字段名 | 类型 | 必填 | 描述 |
+| :--- | :--- | :---: | :--- |
+| `push_token_id` | string | 是 | 由 §3.8.5.1 返回 |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_041",
+  "data": {
+    "push_token_id": "pt_9001",
+    "revoked_at":    "2026-04-20T11:30:00Z"
+  }
+}
+```
+
+**异常响应**：`E_GOV_4011` (401)、`E_GOV_4041` (404，按幂等返回 200 亦合法)。
+
+---
+
+### 3.8.6 客户端元信息
+
+#### 3.8.6.1 查询版本与强升策略
+
+**描述**：三端启动时查询当前平台的**最新版本 / 最低兼容版本 / 强升策略 / 公告**（NFR-OPS-001；与 `sys_config` 中的 `min_client_version_{platform}` 协同）。
+
+**HTTP 请求**：`GET /api/v1/meta/version`
+
+**安全性**：匿名；按 IP 限流。
+
+**Query Parameters**：
+
+| 字段名 | 类型 | 必填 | 描述 |
+| :--- | :--- | :---: | :--- |
+| `platform` | string | 是 | `WEB_ADMIN` / `ANDROID` / `H5` |
+| `channel` | string | 否 | 发布渠道（`RELEASE` / `BETA`），默认 `RELEASE` |
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_050",
+  "data": {
+    "platform":            "ANDROID",
+    "latest_version":      "2.1.0",
+    "min_compatible_version": "2.0.0",
+    "force_upgrade":       false,
+    "release_notes_url":   "https://static.example.com/release/android/2.1.0.html",
+    "download_url":        "https://static.example.com/apk/android/mashang-2.1.0.apk",
+    "announcement": {
+      "level":    "INFO",
+      "title":    "V2.1 新增 AI 会话归档",
+      "content":  "版本 2.1.0 优化了 AI 会话与通知批量处理，建议升级。",
+      "expires_at":"2026-05-20T00:00:00Z"
+    },
+    "server_time":         "2026-04-20T11:40:00Z"
+  }
+}
+```
+
+> 客户端若本地 `BuildConfig.VERSION_NAME < min_compatible_version` 且 `force_upgrade == true` 时必须弹 `MhVersionGuardDialog` 阻塞交互。
+
+**异常响应**：`E_GOV_4001` (400 `platform` 非法)。
+
+---
+
+### 3.8.7 认证登出
+
+#### 3.8.7.1 登出（吊销 Token）
+
+**描述**：显式注销当前 access token（加入服务端吊销列表）；避免家属设备被他人接管。基线 §3.6 仅支持本地丢弃 token，本节补齐服务端主动吊销（FR-GOV-001 扩展）。
+
+**HTTP 请求**：`POST /api/v1/auth/logout`
+
+**安全性**：需鉴权（JWT）；幂等。
+
+**Headers**：`X-Request-Id`、`X-Trace-Id`（必填）。
+
+**Request Body (application/json)**：
+
+```json
+{
+  "refresh_token": "string, 可选, 若提供则一并吊销",
+  "push_token_id": "string, 可选, 若提供则同时注销推送（避免额外一次 §3.8.5.2 调用）",
+  "request_time":  "string, 必填, ISO-8601"
+}
+```
+
+**Response (HTTP 200)**：
+
+```json
+{
+  "code": "ok",
+  "message": "success",
+  "trace_id": "trc_20260420_060",
+  "data": {
+    "revoked_at":  "2026-04-20T11:45:00Z"
+  }
+}
+```
+
+**异常响应**：`E_GOV_4011` (401，token 已过期则幂等返回 200)。
+
+---
+
+### 3.8.8 V2.1 新增错误码（补充至 §2）
+
+| 错误码 | HTTP | 语义 | 使用端点 |
+| :--- | :---: | :--- | :--- |
+| `E_CLUE_4011` | 401 | entry_token 缺失或过期 | §3.8.2.1 |
+| `E_CLUE_4041` | 404 | short_code 不存在 | §3.8.2.1 |
+| `E_GOV_4131` | 413 | 上传文件体积超限 | §3.8.3.1 |
+| `E_AI_4030` | 403 | 非会话所有者 | §3.8.1.2/3/4/5 |
+| `E_AI_4041` | 404 | 会话或消息不存在 | §3.8.1.2/3/4/5 |
+
+---
+
 ## 4. WebSocket 实时推送契约
 
 > **底层设计基线**：LLD V2.0 §11（WebSocket 路由与通知设计）、SADD V2.0 HC-08（四通道通知）

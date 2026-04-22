@@ -1288,7 +1288,7 @@ defineEmits<{ (e: 'pass', captchaToken: string): void; (e: 'fail'): void; }>();
 ```
 
 - UI：拖动滑块完成拼图，对齐后弹出 Toast；失败后 3 秒冷却。
-- 行为：拖动成功后调用 `tokenProvider()`（内部请求后端 `/api/v1/public/captcha/issue`，若 BDD 未开放可退化为前端自生成 nonce + 后端校验机制，由后端约定）。
+- 行为：拖动成功后调用 `tokenProvider()`（内部请求 `POST /api/v1/public/captcha/issue`，API §3.8.2.2），取回 `captcha_token` 后由业务端点消费。
 - 该组件只负责获取 `captcha_token`，最终提交交给父页处理。
 
 > **注**：基线 API V2.0 要求手动录入接口必带 `captcha_token`（§3.2.2），但未单列"CAPTCHA 下发"端点，前端按 BDD 约定调用；若后端未提供，Captcha 由 `risk-service` 内部产生并通过 `/api/v1/public/clues/manual-entry` 响应的 `challenge` 字段触发二次交互——此种情况下 `CaptchaSlider` 由 P-02 在 400 响应触发时按需弹出。
@@ -1473,7 +1473,7 @@ export default defineConfig({
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | P-01 | 扫码解析中转页 | `/r/:resource_token` | 无 | 匿名 | 扫码 / NFC | `GET /r/{resource_token}`（网关侧） | FR-CLUE-002 / API §3.2.1 |
 | P-02 | 手动短码兜底页 | `/manual-entry` | Default | 匿名 | 二维码污损、主动访问 | `POST /api/v1/public/clues/manual-entry` | FR-CLUE-003 / API §3.2.2 |
-| P-03 | 患者救援信息页 | `/p/:short_code/rescue-info` | Default | `entry_token` | 患者 MISSING / MISSING_PENDING | **无独立 API**，数据由 P-01 的 302 后通过 BFF 补充（见 §14.3 说明） | FR-CLUE-004 |
+| P-03 | 患者救援信息页 | `/p/:short_code/rescue-info` | Default | `entry_token` | 患者 MISSING / MISSING_PENDING | `GET /api/v1/public/patients/{short_code}/rescue-info`（API §3.8.2.1，V2.1 增量） | FR-CLUE-004 |
 | P-04 | 普通线索上报页 | `/p/:short_code/clues/new` | Step | `entry_token` | 标签 BOUND + 患者 NORMAL | `POST /api/v1/clues/report` | FR-CLUE-001 / API §3.2.3 |
 | P-05 | 紧急线索上报页 | `/p/:short_code/emergency/report` | Step | `entry_token` | 标签 BOUND + 患者 MISSING/MISSING_PENDING | `POST /api/v1/clues/report` | FR-CLUE-001 / FR-CLUE-004 |
 | P-06 | 受理回执页 | `/clues/receipt/:clue_no` | Default | 匿名 | 上报成功后跳转 | 仅客户端状态 | FR-CLUE-004 |
@@ -1513,21 +1513,27 @@ export default defineConfig({
   横向拦截：任何页遭 429 → [P-08]；其它异常 → [P-10]
 ```
 
-### 14.3 基线补齐说明（重要）
+### 14.3 基线对齐（API V2.1 已补齐）
 
-**API V2.0 现状**：§3.2 公开 3 条好心人 API：
+**API V2.0 原状**：§3.2 公开 3 条好心人 API：
 
 1. `GET /r/{resource_token}`（网关侧 302，不由 H5 直接调用）
 2. `POST /api/v1/public/clues/manual-entry`
 3. `POST /api/v1/clues/report`
 
-SRS FR-CLUE-004 要求在患者 `MISSING` 时展示"全量救援信息"（姓名、年龄、衣着、慢性病、家属电话、AI 建议），但 API V2.0 未独立暴露匿名只读的"患者救援公开信息" 端点。
+SRS FR-CLUE-004 要求在患者 `MISSING` 时展示“全量救援信息”（姓名、年龄、衣着、慢性病、家属电话、AI 建议），但 API V2.0 未独立暴露匿名只读的“患者救援公开信息”端点。
 
-**本手册处理原则**（遵循"禁止虚构"硬约束）：
+**API V2.1 已补齐**：
 
-1. H5 端不主动生成该 API；`P-03` 渲染的数据由后端在 302 跳转时通过 `entry_token` 载荷（JWT claims）携带公开字段（`patient_name_masked` / `age` / `clothes_text` / `rescue_tip` 等）。LLD §12.2 已定义 entry_token，可在 claims 中扩展只读救援信息的公开子集。
-2. 手册在 §23 "跨文档核验清单"显式登记该差距，建议后续迭代由后端补齐 `GET /api/v1/public/patients/{short_code}/rescue-info`（入参 `entry_token` Cookie，出参公开脱敏视图），本手册已在 `api/public-patients.ts` 预留接入点与 DTO 骨架，实现对齐后无需改动页面代码。
-3. 在接入点未到位前，`P-03` 兜底展示：患者短码、"该患者正在走失中，请协助留下线索"、"立即上报线索"主按钮；不展示任何 PII。
+1. `GET /api/v1/public/patients/{short_code}/rescue-info`（API §3.8.2.1）——公开救援信息视图，需携带有效 `entry_token` Cookie；返回患者脱敏视图 + 当前关联任务 + 紧急联系人（手机号脱敏）。
+2. `POST /api/v1/public/captcha/issue`（API §3.8.2.2）——CAPTCHA 一次性 token 下发；供 P-02 手动短码页与 P-04/P-05 匿名上报页在命中风控阈值时消费。
+3. `POST /api/v1/media/upload-sign`（API §3.8.3.1）——线索照片直传 OSS 的 presigned URL 下发；替代先前登记的 `/api/v1/oss/upload` gap。
+
+**手册落地规则**：
+
+1. `P-03` 的数据进入页后直接调 `GET /api/v1/public/patients/{short_code}/rescue-info`；响应为 `null.rescue` 时退化为“仅发现标识”路径（见 P-07）。
+2. `api/public-patients.ts` 包装端点调用与响应 DTO；失败码 `E_CLUE_4011` 返回 P-01 重进，`E_CLUE_4041` 展示“该码无效”，`E_CLUE_4291` 展示“访问过频，稍后再试”。
+3. 上传图片统一调用 `POST /api/v1/media/upload-sign?scene=CLUE_PHOTO` 拿到 `upload_url` 后直传 OSS，不再依赖 BDD 备选契约。
 
 ### 14.4 页面覆盖率目标
 
@@ -2481,9 +2487,9 @@ server {
 
 | # | 事项 | 影响 | 建议处置 |
 | :--- | :--- | :--- | :--- |
-| R-01 | API V2.0 未暴露匿名只读"患者救援公开信息"端点，P-03 依赖 entry_token 载荷 / BFF 补齐 | FR-CLUE-004 "全量救援信息"展示落地风险 | 建议在 V2.2 增量中新增 `GET /api/v1/public/patients/{short_code}/rescue-info` 并写入 API 文档；本手册 §14.3 / §15.3 已预留接入点 |
+| R-01 | `GET /api/v1/public/patients/{short_code}/rescue-info`（P-03 全量救援信息） | 已在 API V2.1 §3.8.2.1 补齐 | 已消除：手册 §14.3 切换至直接消费该端点 |
 | R-02 | OSS 直传端点（presigned URL）未在 API V2.0 §3 单列 | 前端上传需与 BDD / OSS 团队对齐契约 | 由后端在 BDD 补齐；前端 §11.4 的字段命名与契约骨架需保持一致 |
-| R-03 | CAPTCHA 下发端点未在 API V2.0 独立暴露 | P-02 首次进入若后端未预置，需依赖响应内 challenge 二次交互 | 由后端在 BDD §风控 中补齐，前端 §12.4 按两种策略兼容 |
+| R-03 | CAPTCHA 下发端点已由 API V2.1 §3.8.2.2 正式暴露 | 已消除；`captcha/Index.vue` 的 `tokenProvider` 已固定调用 `POST /api/v1/public/captcha/issue` | 已消除 |
 | R-04 | H5 域与 API 域的 SameSite=Strict Cookie 策略要求同根域 | 若跨根域部署 entry_token 失效 | 发布使用 Nginx 反代同源方案（§21.3） |
 
 ### 22.3 禁令清单核验
@@ -2520,7 +2526,7 @@ server {
 | FR-CLUE-001 匿名上报 + GPS/地图点选双路 | P0 | §16.1 P-04 / §11.3 `useGeolocation` 双通路；API §3.2.3 | ✅ |
 | FR-CLUE-002 三类上报入口（设备扫码 / 海报扫码 / 手动短码） | P0 | P-01（扫码与海报同一 `/r/`）+ P-02（短码） | ✅ |
 | FR-CLUE-003 短码 + 人机校验 | P0 | P-02 + `CaptchaSlider` + `device_fingerprint` | ✅ |
-| FR-CLUE-004 扫码分态展示 + 仅标识 | P0 | P-03（MISSING / PENDING） + P-07（tag-only） | ⚠️ 依赖 R-01 后端 BFF |
+| FR-CLUE-004 扫码分态展示 + 仅标识 | P0 | P-03（MISSING / PENDING） + P-07（tag-only） | ✅ 已消费 `GET /public/patients/{short_code}/rescue-info`（API §3.8.2.1） |
 | FR-CLUE-005 防漂移速率 | P0 | 由后端完成，H5 不感知 | ✅（无关） |
 | FR-CLUE-006 围栏越界告警 | P0 | 由后端完成 | ✅（无关） |
 | FR-CLUE-007 可疑线索人工复核 | P0 | 属 Web 管理端 | ✅（超纲） |
@@ -2588,7 +2594,7 @@ server {
 | §11 风控三层 | 前端跳 P-08 承接 429 | ✅ |
 | §12 Redis 幂等 | 复用 `X-Request-Id` | ✅ |
 | OSS 上传 / 水印 | 前端按 presigned URL 契约接入 | ⚠️ R-02 需 BDD 固化契约 |
-| CAPTCHA 下发 | 前端兼容 "预置 token / 响应触发" 两种 | ⚠️ R-03 需 BDD 明确 |
+| CAPTCHA 下发 | `tokenProvider` 固定调用 `POST /api/v1/public/captcha/issue` | ✅ API V2.1 §3.8.2.2 已补齐 |
 | `/r/{resource_token}` 302 | 前端遵循（见 §15.1 / §21.3） | ✅ |
 
 ### 23.7 交叉一致性结论
@@ -2598,7 +2604,7 @@ server {
 3. **状态机一致性**：H5 仅作为"状态观察者"，不修改任何后端状态机；`BOUND → SUSPECTED_LOST` 触发通过 `tag_only=true` 上报驱动，与 SADD §4.4.3 吻合。
 4. **隐私一致性**：与 HC-07 / BR-010 / HC-H5-NoPII 三项叠加约束一致，不产生冲突口径。
 5. **发布一致性**：Nginx 同源反代保证 SameSite=Strict Cookie 可用，与 LLD §12.2 `entry_token` 配置一致。
-6. **剩余差距**：R-01 / R-02 / R-03（后端侧契约补齐），H5 端已预留接入点，待对齐后零代码改动对接。
+6. **剩余差距**：R-02 / R-04（后端侧契约补齐），H5 端已预留接入点，待对齐后零代码改动对接；R-01 / R-03 已在 API V2.1 §3.8 消除。
 
 ## 24. 交付总结
 
@@ -2635,9 +2641,9 @@ server {
 
 | 编号 | 事项 | 影响 | 建议动作 |
 | :--- | :--- | :--- | :--- |
-| R-01 | 缺失 `GET /public/patients/{short_code}/rescue-info` | P-03 MISSING 全量信息展示 | 后端在 API V2.2 增量补齐；H5 已预留 stub（§14.3） |
+| R-01 | ✅ `GET /public/patients/{short_code}/rescue-info` | P-03 MISSING 全量信息展示 | API V2.1 §3.8.2.1 已补齐；H5 §14.3 / P-03 直接消费 |
 | R-02 | OSS presigned 契约未在 API 文档独立列 | 上传契约需 BDD 固化 | 与后端对齐字段；前端 `useUploader` 不改 |
-| R-03 | CAPTCHA 首发端点未独立暴露 | P-02 首次进入兼容两策略 | 后端明确 `/public/captcha` 是否启用 |
+| R-03 | ✅ CAPTCHA 首发端点已暴露 | P-02 / P-04 风控触发 | API V2.1 §3.8.2.2 已补齐；`captcha/Index.vue` 的 `tokenProvider` 已固定调用 `POST /public/captcha/issue` |
 | R-04 | SameSite=Strict 要求同根域 | 跨域部署会失效 | 发布按 §21.3 反代方案部署 |
 
 ### 24.4 关键可落地清单（前端工程师照做）
@@ -2661,11 +2667,11 @@ server {
 | 页面数 | 10 |
 | API 消费数 / 应消费数 | 3 / 3（100%） |
 | HC 约束覆盖 | SADD HC 8 + H5 HC 16 = 24 条 |
-| 一致性自检 | §22 全 ✅，遗留 4 项（R-01~R-04） |
+| 一致性自检 | §22 全 ✅，遗留 2 项（R-02 / R-04；R-01 / R-03 已随 API V2.1 消除） |
 | 跨文档核验 | §23 全部 ✅ 或 ⚠️（需后端侧补齐） |
 | 分批次 | 24 批（满足 ≥20 批硬约束） |
 | 可落地性 | 前端可直接照本手册开发，无需再做设计 |
-| 建议下一步 | 后端推进 R-01 / R-02 / R-03 契约补齐 |
+| 建议下一步 | 后端推进 R-02 / R-04 契约补齐（R-01 / R-03 已由 API V2.1 §3.8 消除） |
 
 > **V2 基线文档已读取完毕并闭环**。本手册严格锚定 `v2/` 下所有基线，所有 API 字段逐字对齐；未在基线出现的端点全部在 §22.2 / §23 中显式声明为"遗留"，不作虚构。
 

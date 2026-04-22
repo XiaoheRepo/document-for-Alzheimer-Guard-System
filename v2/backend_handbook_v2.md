@@ -2300,3 +2300,105 @@ public class AdminUserService {
 6. 审计：每次成功调用写入 `sys_log` 可查询。
 
 
+---
+
+## 25. V2.1 基线增量实现要点（对应 API §3.8）
+
+> **本章依据**：API V2.0 §3.8（13 个新增端点）、DBD §2.6.7 `user_push_token` / §2.6.8 `captcha_challenge` / §2.5.1 `ai_session`。本章给出落地最小实现契约，编码细节服从 §4 分层规范与 §11 Outbox 规范。
+
+### 25.1 端点 → 服务 → 控制器映射（必须）
+
+| 接口 (§) | 服务 | Controller | Service 方法 |
+| :--- | :--- | :--- | :--- |
+| §3.8.1.1 `GET /ai/sessions` | `ai-service` | `AiSessionController#list` | `AiSessionQuery.list(userId, filter, cursor)` |
+| §3.8.1.2 `GET /ai/sessions/{id}` | `ai-service` | `AiSessionController#detail` | `AiSessionQuery.detail(userId, id)` |
+| §3.8.1.3 `DELETE /ai/sessions/{id}` | `ai-service` | `AiSessionController#archive` | `AiSessionService.archive(userId, id, reqId)` |
+| §3.8.1.4 `GET /ai/sessions/{id}/messages` | `ai-service` | `AiMessageController#history` | `AiSessionQuery.messages(userId, id, cursor)` |
+| §3.8.1.5 `POST /ai/sessions/{id}/messages/{mid}/cancel` | `ai-service` | `AiMessageController#cancel` | `AiSessionService.cancelMessage(userId, id, mid, reqId)` |
+| §3.8.2.1 `GET /public/patients/{short_code}/rescue-info` | `clue-service` | `PublicRescueController#rescueInfo` | `RescueInfoQuery.byShortCode(entryToken, shortCode)` |
+| §3.8.2.2 `POST /public/captcha/issue` | `risk-service` | `PublicCaptchaController#issue` | `CaptchaService.issue(scene, fingerprint, challenge)` |
+| §3.8.3.1 `POST /media/upload-sign` | `media-service` | `MediaUploadController#sign` | `MediaSignService.sign(userId, scene, fileMeta)` |
+| §3.8.4.1 `POST /notifications/read-all` | `notify-service` | `NotificationController#readAll` | `NotificationService.readAll(userId, type, beforeTime, reqId)` |
+| §3.8.5.1 `POST /users/me/push-tokens` | `notify-service` | `PushTokenController#register` | `PushTokenService.register(userId, cmd)` |
+| §3.8.5.2 `DELETE /users/me/push-tokens/{id}` | `notify-service` | `PushTokenController#revoke` | `PushTokenService.revoke(userId, id)` |
+| §3.8.6.1 `GET /meta/version` | `gateway-meta` | `MetaController#version` | `MetaService.version(platform, channel)`（从 `sys_config` 读 `min_client_version_*`） |
+| §3.8.7.1 `POST /auth/logout` | `auth-service` | `AuthController#logout` | `AuthService.logout(userId, accessJti, refreshToken, pushTokenId)` |
+
+### 25.2 AI 会话增量实现（必须）
+
+- **读侧**（list / detail / messages）走 CQRS Query 端，直接读 `ai_session` JSONB；`messages` 端点按 `seq` 游标分页（服务端裁切 JSONB 数组）。
+- **archive**：`UPDATE ai_session SET status='ARCHIVED', archived_at=now(), version=version+1 WHERE id=? AND user_id=? AND version=?`（乐观锁 CAS，规则 HC-02）。幂等：若 `status` 已为 `ARCHIVED` 直接返回当前记录，不报错。
+- **cancel**：将 `messages[mid].completion_status` 置为 `CANCELLED`；若 SSE 流仍挂载，写 Redis key `ai:cancel:{session_id}:{message_id}` 供流处理器感知后关闭上游。
+- **Outbox 事件**：`ai.session.archived`（payload：`session_id / user_id / archived_at / trace_id`）。
+- **错误码**：`E_AI_4030` / `E_AI_4041`（§3.8.8）。
+
+### 25.3 公开救援信息（必须）
+
+- `entry_token` 由 §3.2.1 / §3.2.2 签发，JWT-lite（HS256，TTL 120s，claim = `short_code + tag_state + issued_at`）；网关层校验，非法 → `E_CLUE_4011`。
+- `profile-service` 通过 `short_code` 反查 `patient_profile`（必须已 `MISSING` / `MISSING_PENDING` / `SUSTAINED`），加载当前 `ACTIVE` 任务；`emergency_contact` 从 `guardian_relation` 取 `PRIMARY_GUARDIAN` 单人。
+- 响应装配必须走 `@Desensitize` 统一切面（HC-07）；禁止返回原始 PII。
+- 限流：同一 `entry_token` 5 RPS、同一 IP 20 RPS；超限 `E_CLUE_4291`。
+
+### 25.4 CAPTCHA 下发（必须）
+
+- `risk-service` 校验 `challenge_result.trace` 与 `duration_ms`（风控规则引擎 `rule.captcha.slider_v1`）→ 失败 `E_CLUE_4001`。
+- 成功后**不写 DB**，改用 Redis：`SET captcha:{token} "{scene}|{fingerprint}" EX 300 NX`（`token = UUIDv7`）。
+- 业务端点（§3.2.2 / §3.2.3）消费时执行 `GETDEL captcha:{token}`；返回 `nil` 即已消耗或过期，抛 `E_CLUE_4011`。
+- 此方案无 DB 写压力，无需清理 Job，TTL 自动过期；DBD §2.6.8 记录此说明备查。
+
+### 25.5 Media 直传凭证（必须）
+
+- `media-service` 不代传二进制；调用阿里云 OSS STS / PresignV4 生成 `PUT` 预签名 URL，TTL ≤ 10 分钟。
+- `scene` 白名单 → 物化 OSS `object_key` 前缀（如 `media/clue/{yyyy}/{MM}/{dd}/u{userId}_{shortId}.{ext}`）。
+- 校验 `content_type ∈ {image/jpeg, image/png, image/webp}` 且 `size_bytes ≤ max_size_bytes`（`PATIENT_AVATAR` / `USER_AVATAR` 5MB，其余 10MB）。
+- 返回的 `public_url` 为 CDN 回源地址；业务端点回填后由 `media-service` 异步 `HEAD` 校验文件是否落地（后台 Job），并对不合规图片发 `media.violation_detected` 事件。
+
+### 25.6 通知批量已读（必须）
+
+- 单 SQL：`UPDATE notification_inbox SET read_status='READ', read_at=now() WHERE user_id=? AND read_status='UNREAD' [AND type=?] [AND created_at<=?]`；返回 `affected_count`。
+- 走 `auth-service` 幂等网关：同 `X-Request-Id` 重复请求直接读 `idempotency_log` 返回首次结果。
+- Outbox 事件：不发布（属于读状态变更，无下游副作用）。
+
+### 25.7 推送 Token 注册与注销（必须）
+
+- `register`：按 `(user_id, device_id)` `INSERT ... ON CONFLICT DO UPDATE` — 更新 `push_token / platform / app_version / last_active_at / status='ACTIVE' / revoked_at=NULL`。
+- `revoke`：`UPDATE user_push_token SET status='REVOKED', revoked_at=now() WHERE push_token_id=? AND user_id=?`；幂等。
+- `notification-service` 分发 `MOBILE_PUSH` 渠道时仅读 `status='ACTIVE'` 行；禁止保留已吊销 token（HC-05）。
+- Outbox 事件：`user.push_token.registered` / `user.push_token.revoked`（payload：`push_token_id / user_id / platform / occurred_at / trace_id`）。
+
+### 25.8 /meta/version（必须）
+
+- 仅读 `sys_config`：`min_client_version_{platform}` / `latest_client_version_{platform}` / `force_upgrade_{platform}` / `release_notes_url_{platform}` / `download_url_{platform}` / `announcement_{platform}_{locale}`。
+- 响应缓存：Nginx/CDN `Cache-Control: public, max-age=60`；`announcement` 变更后由运维清 CDN。
+- 不走鉴权；按 IP 60 RPS 限流。
+
+### 25.9 /auth/logout（必须）
+
+- 将当前 access token 的 `jti` 写入 Redis 吊销集 `auth:revoked:{jti}`，TTL = token 剩余寿命。
+- 若提供 `refresh_token`，从 `auth_refresh_token` 表置 `revoked_at`（或从 Redis `auth:refresh:{jti}` DEL）。
+- 若提供 `push_token_id`，链式调 §25.7 revoke 服务。
+- 写 `sys_log`：`action=auth.logout, risk_level=LOW`。
+- 无 Outbox 事件。
+
+### 25.10 错误码补齐（§2 对齐，必须）
+
+| 错误码 | HTTP | 语义 | 对应端点 |
+| :--- | :---: | :--- | :--- |
+| `E_CLUE_4011` | 401 | entry_token 缺失 / 过期 / 与 short_code 不一致 | §3.8.2.1 |
+| `E_CLUE_4041` | 404 | short_code 不存在或标签 `VOID` | §3.8.2.1 |
+| `E_CLUE_4001` | 400 | CAPTCHA challenge 校验失败 | §3.8.2.2 |
+| `E_CLUE_4291` | 429 | 公开域频率超限 | §3.8.2.1/2 |
+| `E_GOV_4131` | 413 | 上传体积超限 | §3.8.3.1 |
+| `E_GOV_4291` | 429 | 上传频率超限 | §3.8.3.1 |
+| `E_AI_4030` | 403 | 非会话所有者 | §3.8.1.* |
+| `E_AI_4041` | 404 | 会话或消息不存在 | §3.8.1.* |
+
+### 25.11 测试清单（必须）
+
+1. AI 归档幂等：连续两次 `DELETE` 均返回 200；`version` 仅 +1。
+2. 消息续传：`after_cursor=last_seq` 拉取增量正确；`seq` 单调。
+3. 公开 rescue-info：`entry_token` 被篡改 → `E_CLUE_4011`；PII 脱敏正则校验。
+4. CAPTCHA：同一 `captcha_token` 二次消费 → 业务端抛 `E_CLUE_4011`。
+5. Upload-sign：越界 `size_bytes` → `E_GOV_4131`；非白名单 MIME → `E_GOV_4001`。
+6. Push-token：同 `device_id` 注册两次仅一行；revoke 后 `notification-service` 不再投递。
+7. /auth/logout：吊销后原 access token 调受保护接口应 401。

@@ -2167,8 +2167,8 @@ page.admin.patient.dialog.forceTransfer.title/target/reason/evidence/confirm/war
 | P-04a / P-04b | GET | `/api/v1/clues` | 线索列表（含复核队列过滤） |
 | P-04c | POST | `/api/v1/clues/{clue_id}/override` | 覆写（可疑→有效） |
 | P-04c | POST | `/api/v1/clues/{clue_id}/reject` | 驳回（可疑→无效） |
-| P-05a | GET | `/api/v1/patients` | 患者列表 |
-| P-05b | GET | `/api/v1/patients/{patient_id}` | 患者详情 |
+| P-05a | GET | `/api/v1/admin/patients` | 患者列表（管理员视图，PII 脆敏化） |
+| P-05b | GET | `/api/v1/admin/patients/{patient_id}` | 患者详情（管理员视图） |
 | P-06a | GET | `/api/v1/material/orders` | 工单列表 |
 | P-06b | POST | `/api/v1/material/orders/{order_id}/approve` | 审批 |
 | P-06b | POST | `/api/v1/material/orders/{order_id}/ship` | 发货 |

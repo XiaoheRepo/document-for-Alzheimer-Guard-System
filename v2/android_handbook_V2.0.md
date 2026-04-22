@@ -864,7 +864,7 @@ fun MhNavHost(navController: NavHostController, startDestination: MhRoute) {
 1. `Splash → Home` 后 `popUpTo(0)` 清栈。
 2. Tab 之间切换保留状态（`saveState = true, restoreState = true`）。
 3. 二级页回退默认弹出上一级；任务关闭成功后需 `popBackStack(MhRoute.TaskDetail, inclusive = false)` 回到详情并触发刷新。
-4. AI 对话页 `AiChat` 支持后台最小化，不走 `Activity.finish`；回前台自动调用 `GET /api/v1/ai/sessions/{id}` 续接上下文。
+4. AI 对话页 `AiChat` 支持后台最小化，不走 `Activity.finish`；回前台读取本地持久化的 `session_id`，继续原 SSE 连接（基线未提供单会话 GET，上下文由服务端通过 session_id 自动关联）。
 
 ---
 
@@ -1439,7 +1439,7 @@ class AiSseClient @Inject constructor(private val factory: EventSources.Factory)
 
 1. 应用在前台：**忽略**系统通知栏，直接通过 WS 更新 UI；避免重复提示。
 2. 应用在后台：走 Notification Channel（`mshj_task` / `mshj_clue` / `mshj_system`）；点击进入深链。
-3. Token 在 `POST /api/v1/users/me/push-tokens` 注册；登出时调用 `DELETE /users/me/push-tokens/{id}` 注销。
+3. Token 注册 / 注销端点以 **BDD §推送接入章节**为准（基线 API V2.0 未独立列出 `users/me/push-tokens`，作为跨文档差距登记）。
 4. 华为 / 小米 / vivo / OPPO 通过 `push-unification` 库分发；不足时回退 FCM；**禁止**回退短信（HC-Channel）。
 
 ### 11.6 WorkManager 补洞
@@ -1448,7 +1448,7 @@ class AiSseClient @Inject constructor(private val factory: EventSources.Factory)
 | :--- | :--- | :--- |
 | `RealtimeReconcileWorker` | 网络恢复 / 回前台 / 每 15 min 心跳 | 对 `task` / `clue` / `notify` 调用 `GET …?after_version=<local>` 全量拉齐 |
 | `OutboxReplayWorker` | 网络恢复 / 工单 Pending 存在 | 复用原 `X-Request-Id` 重放未成功的写请求（§12.5） |
-| `AiMessageReconcileWorker` | 恢复前台 + 存在进行中会话 | 调用 `GET /api/v1/ai/sessions/{id}/messages?after_cursor=…` 续读 |
+| `AiMessageReconcileWorker` | 恢复前台 + 存在进行中 SSE | 由 `MhSseClient` 自行重连；若 token 流未完成，客户端发起新一轮 `POST /api/v1/ai/sessions/{id}/messages`（基线未提供续读端点） |
 
 ### 11.7 回前台 / 断网恢复的统一编排
 
@@ -1560,7 +1560,7 @@ data class ClueEntity(
 @Entity(tableName = "outbox", primaryKeys = ["request_id"])
 data class OutboxEntity(
     val request_id: String,                  // 就是 X-Request-Id
-    val endpoint: String,                    // e.g. POST /api/v1/clues
+    val endpoint: String,                    // e.g. POST /api/v1/clues/report
     val method: String,
     val body_json: String,
     val created_at: Long,                    // millis
@@ -1590,12 +1590,12 @@ data class VersionEntity(
 
 ### 12.5 Outbox 写请求队列
 
-适用场景：发线索（`POST /api/v1/clues`）、创建任务（`POST /api/v1/rescue/tasks`）、接收工单（`POST /api/v1/material/orders/{id}/receive`）、AI 意图确认（`POST /ai/intents/{id}/confirm`）、通知标记已读（批量）。
+适用场景：发线索（`POST /api/v1/clues/report`）、创建任务（`POST /api/v1/rescue/tasks`）、接收工单（`POST /api/v1/material/orders/{order_id}/receive`）、AI 意图确认（`POST /api/v1/ai/sessions/{session_id}/intents/{intent_id}/confirm`）、通知标记已读（循环单条）。
 
 ```kotlin
 suspend fun submitClue(req: CreateClueReq): Result<ClueCreatedResp> {
     val requestId = "req_" + Uuid.v4().replace("-", "")
-    outbox.insert(OutboxEntity(requestId, "POST /api/v1/clues", "POST", json.encodeToString(req), now(), 0, null, "PENDING"))
+    outbox.insert(OutboxEntity(requestId, "POST /api/v1/clues/report", "POST", json.encodeToString(req), now(), 0, null, "PENDING"))
     return try {
         val resp = api.submit(req, requestId).unwrap()
         outbox.markSuccess(requestId)
@@ -1932,55 +1932,58 @@ fun MhRoot(content: @Composable () -> Unit) {
 | 编号 | 页面名 | 路由 | 所属模块 | 运行时权限 | 关联 API（主） | 需求锚点（SRS / LLD） |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | MH-SPL-01 | 启动页 + 隐私同意 | `Splash` | `feature-splash` | — | — | NFR-SEC-004 |
-| MH-AUTH-01 | 登录 | `AuthLogin` | `feature-auth` | — | `POST /api/v1/auth/login` | FR-AUTH-001 |
-| MH-AUTH-02 | 注册 | `AuthRegister` | `feature-auth` | — | `POST /api/v1/auth/register` | FR-AUTH-002 |
-| MH-AUTH-03 | 找回密码（发送邮件） | `AuthPasswordReset` | `feature-auth` | — | `POST /api/v1/auth/password-reset/request` | FR-AUTH-003 |
-| MH-AUTH-04 | 重置密码（邮件回跳） | `AuthPasswordResetConfirm` | `feature-auth` | — | `POST /api/v1/auth/password-reset/confirm` | FR-AUTH-003 |
-| MH-AUTH-05 | 修改密码 | `MeChangePwd` | `feature-me` | — | `PUT /api/v1/users/me/password` | FR-AUTH-004 |
-| MH-HOME-01 | 家庭工作台 | `Home` | `feature-home` | 通知、（可选）定位 | `GET /api/v1/home/summary`、`GET /api/v1/patients` | FR-HOME-001 |
-| MH-PAT-01 | 患者档案详情 | `PatientDetail` | `feature-patient` | — | `GET /api/v1/patients/{patient_id}/full` | FR-PRO-001 |
-| MH-PAT-02 | 患者档案新建 / 编辑 | `PatientEdit` | `feature-patient` | 相机 / 相册 | `POST /api/v1/patients`、`PUT /api/v1/patients/{id}/profile`、`PUT /api/v1/patients/{id}/appearance` | FR-PRO-002 |
-| MH-PAT-03 | 围栏设置 | `PatientFence` | `feature-patient` | 精确定位 | `PUT /api/v1/patients/{id}/fence` | FR-PRO-003 |
-| MH-PAT-04 | 误记未寻回确认 | `PatientMissingPending` | `feature-patient` | — | `POST /api/v1/patients/{id}/missing-pending/confirm` | FR-PRO-004 |
-| MH-GUA-01 | 监护管理中心 | `GuardianHub` | `feature-guardian` | — | `GET /api/v1/patients/{id}/guardians` | FR-PRO-005 |
-| MH-GUA-02 | 发出监护邀请 | `GuardianInvite` | `feature-guardian` | — | `POST /api/v1/guardians/invitations` | FR-PRO-005 |
-| MH-GUA-03 | 接受 / 拒绝邀请 | `GuardianInviteAccept` | `feature-guardian` | — | `POST /api/v1/guardians/invitations/{id}/accept`、`/reject` | FR-PRO-005 |
-| MH-GUA-04 | 主监护转移发起 | `GuardianTransferInit` | `feature-guardian` | — | `POST /api/v1/patients/{id}/primary-transfer` | FR-PRO-006 |
-| MH-GUA-05 | 主监护转移待确认 | `GuardianTransferConfirm` | `feature-guardian` | — | `POST /api/v1/patients/{id}/primary-transfer/{tid}/confirm`、`/reject`、`/cancel` | FR-PRO-006 |
-| MH-GUA-06 | 移除监护 | `GuardianRemove` | `feature-guardian` | — | `DELETE /api/v1/patients/{id}/guardians/{user_id}` | FR-PRO-007 |
-| MH-TAG-01 | 标签列表 | `TagManager` | `feature-tag` | — | `GET /api/v1/patients/{id}/tags` | FR-TAG-001 |
-| MH-TAG-02 | 标签绑定 | `TagBind` | `feature-tag` | 相机（扫码） | `POST /api/v1/tags/{code}/bind` | FR-TAG-002 |
-| MH-TAG-03 | 标签挂失确认 | `TagLossConfirm` | `feature-tag` | — | `POST /api/v1/tags/{code}/loss/confirm` | FR-TAG-003 |
+| MH-AUTH-01 | 登录 | `AuthLogin` | `feature-auth` | — | `POST /api/v1/auth/login` | FR-GOV-001 |
+| MH-AUTH-02 | 注册 | `AuthRegister` | `feature-auth` | — | `POST /api/v1/auth/register` | FR-GOV-001 |
+| MH-AUTH-03 | 找回密码（发送邮件） | `AuthPasswordReset` | `feature-auth` | — | `POST /api/v1/auth/password-reset/request` | FR-GOV-002（HC-06 邮件通道） |
+| MH-AUTH-04 | 重置密码（邮件回跳） | `AuthPasswordResetConfirm` | `feature-auth` | — | `POST /api/v1/auth/password-reset/confirm` | FR-GOV-002 |
+| MH-AUTH-05 | 修改密码 | `MeChangePwd` | `feature-me` | — | `PUT /api/v1/users/me/password` | FR-GOV-003 |
+| MH-HOME-01 | 家庭工作台 | `Home` | `feature-home` | 通知、（可选）定位 | 前端聚合：`GET /api/v1/patients` + `GET /api/v1/rescue/tasks?state=ACTIVE,SUSTAINED` + `GET /api/v1/notifications/inbox?page_size=3`（基线未提供 `/home/summary` BFF） | FR-PRO-008、FR-TASK-005 |
+| MH-PAT-01 | 患者档案详情 | `PatientDetail` | `feature-patient` | — | `GET /api/v1/patients/{patient_id}`（响应内嵌 `guardians[] / appearance / fence / tags[]`） | FR-PRO-001/003 |
+| MH-PAT-02 | 患者档案新建 / 编辑 | `PatientEdit` | `feature-patient` | 相机 / 相册 | `POST /api/v1/patients`、`PUT /api/v1/patients/{patient_id}/profile`、`PUT /api/v1/patients/{patient_id}/appearance` | FR-PRO-001/002 |
+| MH-PAT-03 | 围栏设置 | `PatientFence` | `feature-patient` | 精确定位 | `PUT /api/v1/patients/{patient_id}/fence` | FR-PRO-003 |
+| MH-PAT-04 | 误记未寻回确认 | `PatientMissingPending` | `feature-patient` | — | `POST /api/v1/patients/{patient_id}/missing-pending/confirm`（`action=CONFIRM_MISSING` 发起任务 / `action=CONFIRM_SAFE` 撤销） | FR-PRO-004 |
+| MH-PAT-05 | 档案注销 | `PatientDelete` | `feature-patient` | — | `DELETE /api/v1/patients/{patient_id}` | FR-PRO-011 |
+| MH-GUA-01 | 监护管理中心 | `GuardianHub` | `feature-guardian` | — | `GET /api/v1/patients/{patient_id}`（读取 `guardians[]`、`pending_invitations[]`、`active_primary_transfer`；基线未单列邀请列表端点，以 patient 聚合返回为准） | FR-PRO-005 |
+| MH-GUA-02 | 发出监护邀请 | `GuardianInvite` | `feature-guardian` | — | `POST /api/v1/patients/{patient_id}/guardians/invitations` | FR-PRO-005 |
+| MH-GUA-03 | 接受 / 拒绝 / 取消邀请 | `GuardianInviteRespond` | `feature-guardian` | — | `POST /api/v1/patients/{patient_id}/guardians/invitations/{invitation_id}/respond`（body `{action: "ACCEPT"｜"REJECT"｜"CANCEL"}`） | FR-PRO-005 |
+| MH-GUA-04 | 主监护转移发起 | `GuardianTransferInit` | `feature-guardian` | — | `POST /api/v1/patients/{patient_id}/guardians/primary-transfer` | FR-PRO-006 |
+| MH-GUA-05 | 主监护转移响应 | `GuardianTransferRespond` | `feature-guardian` | — | `POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/respond`（body `{action: "CONFIRM"｜"REJECT"}`）；发起方撤回走 `POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/cancel` | FR-PRO-006 |
+| MH-GUA-06 | 移除监护 | `GuardianRemove` | `feature-guardian` | — | `DELETE /api/v1/patients/{patient_id}/guardians/{user_id}` | FR-PRO-007 |
+| MH-TAG-01 | 标签列表 | `TagManager` | `feature-tag` | — | 从 `GET /api/v1/patients/{patient_id}` 响应 `tags[]` 字段读取（基线未单列 `/patients/{id}/tags`） | FR-MAT-004 |
+| MH-TAG-02 | 标签绑定 | `TagBind` | `feature-tag` | 相机（扫码） | `POST /api/v1/tags/{tag_code}/bind` | FR-MAT-004 |
+| MH-TAG-03 | 标签挂失确认 | `TagLossConfirm` | `feature-tag` | — | `POST /api/v1/tags/{tag_code}/loss/confirm` | FR-MAT-005 |
+| MH-TASK-00 | 任务列表 | `TaskList` | `feature-task` | — | `GET /api/v1/rescue/tasks` | FR-TASK-005 |
 | MH-TASK-01 | 创建任务 | `TaskCreate` | `feature-task` | 精确定位 | `POST /api/v1/rescue/tasks` | FR-TASK-001 |
-| MH-TASK-02 | 任务详情 | `TaskDetail` | `feature-task` | — | `GET /api/v1/rescue/tasks/{id}/full` | FR-TASK-002 |
-| MH-TASK-03 | 任务关闭 | `TaskClose` | `feature-task` | — | `POST /api/v1/rescue/tasks/{id}/close` | FR-TASK-003 / 004 |
-| MH-TASK-04 | 任务地图 / 轨迹 | `TaskMap` | `feature-task` | 精确定位 | `GET /api/v1/rescue/tasks/{id}/trajectory/latest` | FR-TASK-005 |
-| MH-TASK-05 | 长期维持标记 | `TaskSustained` | `feature-task` | — | `POST /api/v1/rescue/tasks/{id}/sustained` | FR-TASK-006 |
-| MH-CLUE-01 | 线索详情 | `ClueDetail` | `feature-clue` | — | `GET /api/v1/clues/{id}` | FR-CLUE-002 |
-| MH-CLUE-02 | 家属提交线索 | `ClueFamilySubmit` | `feature-clue` | 相机、相册、精确定位 | `POST /api/v1/clues` | FR-CLUE-001 |
-| MH-PUB-01 | 二维码扫码落地 | `PublicScan` | `feature-public` | 相机 | `GET /r/{resource_token}` | FR-PUB-001 |
-| MH-PUB-02 | 手动输入 TagCode | `PublicManualEntry` | `feature-public` | — | `POST /api/v1/public/clues/manual-entry` | FR-PUB-002 |
-| MH-PUB-03 | 匿名上报表单 | `PublicReport` | `feature-public` | 相机、相册、粗略定位 | `POST /api/v1/clues/report` | FR-PUB-003 |
-| MH-PUB-04 | 紧急联系人提示 | `PublicEmergency` | `feature-public` | — | `GET /r/{resource_token}`（`emergency_contact`） | FR-PUB-004 |
-| MH-PUB-05 | 上报成功回执 | `PublicReceipt` | `feature-public` | — | — | FR-PUB-003 |
+| MH-TASK-02 | 任务详情 | `TaskDetail` | `feature-task` | — | `GET /api/v1/rescue/tasks/{task_id}/full`（BFF 聚合）；局部刷新走 `GET /api/v1/rescue/tasks/{task_id}/snapshot` | FR-TASK-002 |
+| MH-TASK-03 | 任务关闭 | `TaskClose` | `feature-task` | — | `POST /api/v1/rescue/tasks/{task_id}/close` | FR-TASK-003/004 |
+| MH-TASK-04 | 任务地图 / 轨迹 | `TaskMap` | `feature-task` | 精确定位 | `GET /api/v1/rescue/tasks/{task_id}/trajectory/latest`（支持 `?after_version=` 增量） | FR-TASK-005 |
+| MH-TASK-05 | 长期维持标记 | `TaskSustained` | `feature-task` | — | `POST /api/v1/rescue/tasks/{task_id}/sustained` | FR-TASK-006 |
+| MH-CLUE-01 | 线索列表 / 详情 | `ClueList`/`ClueDetail` | `feature-clue` | — | `GET /api/v1/clues?task_id=...&clue_id=...`（基线无单条 GET，列表按 `clue_id` 过滤获取详情） | FR-CLUE-004 |
+| MH-CLUE-02 | 家属提交线索 | `ClueFamilySubmit` | `feature-clue` | 相机、相册、精确定位 | `POST /api/v1/clues/report`（登录态携带 JWT，自动识别为家属身份） | FR-CLUE-001 |
+| MH-PUB-01 | 二维码扫码落地 | `PublicScan` | `feature-public` | 相机 | `GET /r/{resource_token}` | FR-CLUE-002 |
+| MH-PUB-02 | 手动输入 TagCode | `PublicManualEntry` | `feature-public` | — | `POST /api/v1/public/clues/manual-entry` | FR-CLUE-003 |
+| MH-PUB-03 | 匿名上报表单 | `PublicReport` | `feature-public` | 相机、相册、粗略定位 | `POST /api/v1/clues/report` | FR-CLUE-001 |
+| MH-PUB-04 | 紧急联系人提示 | `PublicEmergency` | `feature-public` | — | `GET /r/{resource_token}`（`emergency_contact`） | FR-CLUE-004 |
+| MH-PUB-05 | 上报成功回执 | `PublicReceipt` | `feature-public` | — | — | FR-CLUE-001 |
 | MH-ORD-01 | 物资工单列表 | `OrderList` | `feature-material` | — | `GET /api/v1/material/orders` | FR-MAT-001 |
-| MH-ORD-02 | 工单详情 | `OrderDetail` | `feature-material` | — | `GET /api/v1/material/orders/{id}` | FR-MAT-001 |
+| MH-ORD-02 | 工单详情 | `OrderDetail` | `feature-material` | — | `GET /api/v1/material/orders?order_id=...`（基线列表接口按 ID 过滤；不提供单条 GET） | FR-MAT-001 |
 | MH-ORD-03 | 发起工单 | `OrderCreate` | `feature-material` | — | `POST /api/v1/material/orders` | FR-MAT-002 |
-| MH-ORD-04 | 确认签收 / 取消 | `OrderReceive`（详情内动作） | `feature-material` | — | `POST /orders/{id}/receive`、`/cancel` | FR-MAT-003 |
-| MH-NOTI-01 | 消息中心 | `NotificationTab` | `feature-notification` | 通知 | `GET /api/v1/notifications/inbox`、`POST /notifications/{id}/read`、`POST /notifications/read-all` | FR-NOTI-001 |
-| MH-AI-01 | AI 会话列表 | `AiSessionList` | `feature-ai` | — | `GET /api/v1/ai/sessions` | FR-AI-001 |
-| MH-AI-02 | AI 对话（LUI 主页） | `AiChat` | `feature-ai` | 麦克风（可选） | `POST /api/v1/ai/sessions`、`POST /api/v1/ai/sessions/{id}/messages`（SSE） | FR-AI-001 / 002 |
-| MH-AI-03 | 工具意图确认卡 | `AiIntentConfirm`（Chat 内子组件） | `feature-ai` | — | `POST /api/v1/ai/intents/{id}/confirm` | FR-AI-003 |
-| MH-AI-04 | AI 记忆笔记 | `AiMemoryNotes` | `feature-ai` | — | `GET/POST/PUT/DELETE /api/v1/ai/memory-notes` | FR-AI-004 |
-| MH-AI-05 | AI 海报生成 | `AiPoster` | `feature-ai` | 相册（保存） | `POST /api/v1/ai/poster` | FR-AI-005 |
-| MH-AI-06 | AI 反馈 | `AiFeedback`（Chat 内） | `feature-ai` | — | `POST /api/v1/ai/feedback` | FR-AI-006 |
-| MH-ME-01 | 我的主页 | `MeTab` | `feature-me` | — | `GET /api/v1/users/me` | FR-ME-001 |
-| MH-ME-02 | 资料编辑 | `MeProfile` | `feature-me` | 相册 | `PUT /api/v1/users/me` | FR-ME-002 |
+| MH-ORD-04 | 确认签收 / 取消 | `OrderReceive`（详情内动作） | `feature-material` | — | `POST /api/v1/material/orders/{order_id}/receive`、`POST /api/v1/material/orders/{order_id}/cancel` | FR-MAT-003 |
+| MH-NOTI-01 | 消息中心 | `NotificationTab` | `feature-notification` | 通知 | `GET /api/v1/notifications/inbox`、`POST /api/v1/notifications/{notification_id}/read`（基线无批量已读端点，前端循环调用单条） | FR-GOV-008 |
+| MH-AI-01 | AI 对话入口 | `AiChatLauncher` | `feature-ai` | — | `POST /api/v1/ai/sessions`（每次进入创建/续接）；**会话历史列表**在 API V2.0 基线未定义，App 端以本地持久化 + 服务端 session_id 维护（V2.x 如开放再接入） | FR-AI-001 |
+| MH-AI-02 | AI 对话（LUI 主页） | `AiChat` | `feature-ai` | 麦克风（可选） | `POST /api/v1/ai/sessions`、`POST /api/v1/ai/sessions/{session_id}/messages`（SSE） | FR-AI-001/002 |
+| MH-AI-03 | 工具意图确认卡 | `AiIntentConfirm`（Chat 内子组件） | `feature-ai` | — | `POST /api/v1/ai/sessions/{session_id}/intents/{intent_id}/confirm` | FR-AI-003（HC-01） |
+| MH-AI-05 | AI 海报生成 | `AiPoster` | `feature-ai` | 相册（保存） | `POST /api/v1/ai/poster` | FR-AI-004 |
+| MH-AI-06 | AI 反馈 | `AiFeedback`（Chat 内） | `feature-ai` | — | `POST /api/v1/ai/sessions/{session_id}/feedback` | FR-AI-005 |
+| MH-ME-01 | 我的主页 | `MeTab` | `feature-me` | — | `GET /api/v1/users/me` | FR-GOV-003 |
+| MH-ME-02 | 资料查看（只读） | `MeProfile` | `feature-me` | — | `GET /api/v1/users/me`（基线未开放 `PUT /api/v1/users/me`；个人资料修改 V2.x 待补） | FR-GOV-003 |
 | MH-ME-03 | 语言 / 主题 / 大字 | `MeSettings` | `feature-me` | — | — | NFR-UX-002 |
 | MH-ME-04 | 隐私中心 | `MePrivacy` | `feature-me` | — | — | NFR-SEC-004 |
-| MH-ME-05 | 关于 / 版本 | `MeAbout` | `feature-me` | — | `GET /api/v1/meta/version` | FR-ME-003 |
-| MH-ME-06 | 推送令牌注册（系统页 / 后台） | — | `feature-me` | 通知 | `POST /api/v1/users/me/push-tokens`、`DELETE /users/me/push-tokens/{id}` | NFR-NOTI-001 |
+| MH-ME-05 | 关于 / 版本 | `MeAbout` | `feature-me` | — | 读取 `BuildConfig.VERSION_NAME`（基线无 `/meta/version`） | NFR-OPS-001 |
+| MH-ME-06 | 推送令牌注册（系统页 / 后台） | — | `feature-me` | 通知 | 以 **BDD §推送接入章节**为准（基线 API V2.0 未独立列出 `push-tokens` 端点；需后端开放后接入，暂登记为跨文档差距） | NFR-NOTI-001 |
 | MH-ERR-01 | 网络错误 / 空态 / 403 / 404 | `ErrorPage` | `feature-common` | — | — | NFR-UX-001 |
+
+> **说明**：已删除 `MH-AI-04 AI 记忆笔记`（基线未提供 `/ai/memory-notes` 端点），改由会话内上下文承载；如 V2.x 开放再独立建页。
 
 ### 15.2 不在家属端范围（排除说明）
 
@@ -2213,7 +2216,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
   | 区块 | API | 备注 |
   | :--- | :--- | :--- |
   | 当前患者 | `GET /api/v1/patients`（当前用户可访问） + `DataStore.lastPatientId` | 多患者时用底部选择器切换 |
-  | 进行中任务 | `GET /api/v1/rescue/tasks?status=ACTIVE,SUSTAINED&patient_id={id}` | 理论上同患者仅 1 条 |
+  | 进行中任务 | `GET /api/v1/rescue/tasks?state=ACTIVE,SUSTAINED&patient_id={id}` | 理论上同患者仅 1 条 |
   | 快捷操作 | 客户端本地 | — |
   | 最新消息 | `GET /api/v1/notifications/inbox?page_size=3` | 徽标由 WS 推 |
 
@@ -2266,7 +2269,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 └──────────────────────────────────┘
 ```
 
-- **API**：`GET /api/v1/patients/{patient_id}/full`（BFF，聚合 profile + guardians + tags + fence + missing_pending）
+- **API**：`GET /api/v1/patients/{patient_id}`（基线已聚合 profile + guardians + tags + fence + missing_pending 等字段；基线未单列 `/full` BFF 变体）
 - **异常**：`E_PRO_4040` 无权限；`E_PRO_4041` 患者不存在 → 跳错误页。
 - **一键求助**：
   - 有进行中任务 → 跳 `TaskDetail`；
@@ -2338,8 +2341,8 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 
   | 选择 | API |
   | :--- | :--- |
-  | 【确认未寻回，发起任务】 | `POST /api/v1/patients/{id}/missing-pending/confirm` + 自动 `POST /api/v1/rescue/tasks` |
-  | 【误记，撤销】 | `POST /api/v1/patients/{id}/missing-pending/cancel` |
+  | 【确认未寻回，发起任务】 | `POST /api/v1/patients/{patient_id}/missing-pending/confirm` body `{action: "CONFIRM_MISSING"}` + 服务端自动创建 `rescue_task` |
+  | 【误记，撤销】 | `POST /api/v1/patients/{patient_id}/missing-pending/confirm` body `{action: "CONFIRM_SAFE", reason: "..."}` |
   | 【稍后再说】 | 关闭模态（24h 内再次提醒） |
 
 - **错误**：`E_PRO_4092` 该患者已有进行中任务 → 跳 `TaskDetail`。
@@ -2379,9 +2382,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 ```
 
 - **API**：
-  - 列表：`GET /api/v1/patients/{id}/guardians`
-  - 待确认邀请：`GET /api/v1/guardians/invitations?patient_id={id}&status=PENDING`
-  - 进行中转移：`GET /api/v1/patients/{id}/primary-transfer/active`
+  - 档案聚合拉取：`GET /api/v1/patients/{patient_id}`（响应内 `guardians[]`、`pending_invitations[]`、`active_primary_transfer` 字段一次性返回；基线未单列 `/guardians`、`/invitations`、`/primary-transfer/active` 端点）
 
 - **按钮级权限**（§13.5）：
   - 【转移主监护】仅 `primary_guardian_user_id == me.user_id` 可见
@@ -2393,7 +2394,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 
 - **路由**：`GuardianInvite/{patient_id}`
 - **字段**：被邀请人 `username` 或 `email`；`relation`（配偶/子/女/其他）；`note`（可选备注 ≤ 64 字）。
-- **接口**：`POST /api/v1/guardians/invitations`
+- **接口**：`POST /api/v1/patients/{patient_id}/guardians/invitations`
 
   ```json
   { "patient_id": "pat_…", "invitee_key": "lisi@x.com", "invitee_key_type": "email", "relation": "SPOUSE", "note": "家庭成员" }
@@ -2408,7 +2409,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 ### 18.3 MH-GUA-03 接受 / 拒绝邀请
 
 - **触发**：消息中心或推送跳转 → 模态弹窗或独立页 `GuardianInviteAccept/{invitation_id}`
-- **API**：`POST /api/v1/guardians/invitations/{invitation_id}/accept` / `/reject`
+- **API**：`POST /api/v1/patients/{patient_id}/guardians/invitations/{invitation_id}/respond`，body `{action: "ACCEPT" | "REJECT" | "CANCEL"}`
 - **拒绝必填 reason (5–128 字)**；接受后刷新监护列表。
 - **错误**：`E_PRO_4095` 邀请已过期（`INVITATION_EXPIRED_HOURS=72`）。
 
@@ -2416,7 +2417,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 
 - **路由**：`GuardianTransferInit/{patient_id}`
 - **选择**：在现有监护列表中选择一位接收人；输入 `reason` (5–256 字)。
-- **接口**：`POST /api/v1/patients/{patient_id}/primary-transfer`
+- **接口**：`POST /api/v1/patients/{patient_id}/guardians/primary-transfer`
 
   ```json
   { "target_user_id": "usr_…", "reason": "因长期出差…" }
@@ -2431,7 +2432,8 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 
   | 操作者 | 动作 | API |
   | :--- | :--- | :--- |
-  | 目标受方 | 确认 | `POST /api/v1/patients/{id}/primary-transfer/{tid}/confirm` |
+  | 目标受方 | 确认 / 拒绝 | `POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/respond`（body `{action: "CONFIRM" \| "REJECT"}`） |
+  | 发起方 | 撤回 | `POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/cancel` |
   | 目标受方 | 拒绝（reason ≥ 5 字） | `POST …/reject` |
   | 发起方 | 撤销（PENDING 内） | `POST …/cancel` |
 
@@ -2449,7 +2451,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 
 - **路由**：`TagManager/{patient_id}`
 - **业务目标**：展示该患者名下所有标签及其状态。
-- **API**：`GET /api/v1/patients/{patient_id}/tags`
+- **API**：从 `GET /api/v1/patients/{patient_id}` 响应中读取 `tags[]` 字段（基线未单列 `/tags` 子端点）
 - **列表项**：
 
 ```
@@ -2580,7 +2582,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
   | `SUSTAINED` | 允许（仅 `RESOLVED`） | 禁用 |
   | `RESOLVED` / `FALSE_ALARM` | 禁用 | 禁用 |
 
-- **溢出菜单 `⋮`**：分享任务海报（`MH-AI-05`）、导出线索 CSV（`GET /api/v1/rescue/tasks/{id}/clues/export`）。
+- **溢出菜单 `⋮`**：分享任务海报（`MH-AI-05`）；
 
 ### 19.3 MH-TASK-03 关闭任务
 
@@ -2618,8 +2620,8 @@ feature-splash ──▶ feature-auth ──▶ feature-home
   - 围栏：虚线圆（若启用）。
 
 - **API**：
-  - 初始：`GET /api/v1/rescue/tasks/{id}/trajectory/latest`
-  - 增量：`GET /api/v1/rescue/tasks/{id}/trajectory?after_version={v}`
+  - 初始：`GET /api/v1/rescue/tasks/{task_id}/trajectory/latest`
+  - 增量：`GET /api/v1/rescue/tasks/{task_id}/trajectory/latest?after_version={v}`（同一端点携带版本游标；基线未提供 `/trajectory` 根路径变体）
   - 实时：WS `clue.*` 推送点位后直接入图。
 
 - **交互**：
@@ -2659,8 +2661,8 @@ feature-splash ──▶ feature-auth ──▶ feature-home
   | 备注 | ≤ 256 字 |
 
 - **接口**：
-  1. 照片先 `POST /api/v1/media/upload`（multipart）
-  2. 主体 `POST /api/v1/clues`
+  1. 照片先通过后端签发的上传通道上传（以 **BDD §附件上传** 为准；基线 API V2.0 未独立列出 `/media/upload`，由 BDD 章节决定是 presigned URL 直传还是 `/api/v1/oss/upload`）
+  2. 主体 `POST /api/v1/clues/report`
 
   ```json
   {
@@ -2680,7 +2682,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 
 - **路由**：`ClueDetail/{clue_id}`
 - **内容**：照片、位置、时间、上报人脱敏（家属显示姓名、公众显示"爱心网友"）、审核状态、审核理由（如 `APPROVED` 或 `REJECTED`）、相邻线索（时间临近）。
-- **API**：`GET /api/v1/clues/{clue_id}`
+- **API**：`GET /api/v1/clues?clue_id={clue_id}`（基线未开放单条 GET，使用列表接口按 `clue_id` 过滤返回单条）
 - **家属可见**：`review_state ∈ {PENDING, APPROVED}`；`REJECTED` 仅供 Web 管理员可见（家属侧过滤展示"拒绝线索"折叠区 + 拒绝原因脱敏）。
 
 ### 19.8 WebSocket Ticket 获取
@@ -2832,7 +2834,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 - **Tabs**：
   - 进行中（`SUBMITTED` / `APPROVED` / `SHIPPING` / `SHIPPED` / `EXCEPTION`）
   - 已完成（`RECEIVED` / `CANCELLED` / `REJECTED`）
-- **API**：`GET /api/v1/material/orders?status=…&cursor=…&page_size=20`
+- **API**：`GET /api/v1/material/orders?state=…&cursor=…&page_size=20`
 - **项视图**：工单号、患者、物资类型、数量、状态 chip、更新时间、右侧快捷动作（签收 / 取消 / 详情）。
 - **实时**：WS `material` 推送 `order.state.changed` 事件 → 增量刷新该项。
 - **下拉刷新 + 分页**：支持 `PullToRefresh` + `LazyPagingItems`。
@@ -2840,7 +2842,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 ### 21.2 MH-ORD-02 工单详情
 
 - **路由**：`OrderDetail/{order_id}`
-- **API**：`GET /api/v1/material/orders/{order_id}`
+- **API**：`GET /api/v1/material/orders?order_id={order_id}`（基线未开放单条 GET，使用列表接口按 `order_id` 过滤返回单条）
 - **布局**：
 
 ```
@@ -2940,7 +2942,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 | `POST /api/v1/material/orders/{id}/approve` | 管理员 | 不暴露入口 |
 | `POST /api/v1/material/orders/{id}/ship` | 管理员 | 不暴露入口 |
 | `POST /api/v1/material/orders/{id}/resolve-exception` | 管理员 | 不暴露入口 |
-| `GET /api/v1/material/skus`（库存一览） | 管理员 | 家属仅在下单时走 `GET /api/v1/material/skus/public`（对齐 API §3.4） |
+| `GET /api/v1/material/skus`（库存一览） | 管理员 | 基线 API V2.0 未提供家属端 SKU 查询端点；下单时使用基线 `material.order` 请求体中的 `tag_type` 枚举（`QR_CODE` / `NFC`） |
 
 ### 21.6 性能与体验
 
@@ -2965,7 +2967,7 @@ feature-splash ──▶ feature-auth ──▶ feature-home
 - **API**：
   - 列表：`GET /api/v1/notifications/inbox?category=&cursor=&page_size=20`
   - 单条已读：`POST /api/v1/notifications/{notification_id}/read`
-  - 全部已读：`POST /api/v1/notifications/read-all?category=...`
+  - 全部已读：前端遍历未读列表循环调用单条 `/read`（基线未提供批量已读端点）
 - **项视图**：图标（按 category）、标题、内容前 60 字、时间（相对时间"2 分钟前"）、未读小点。
 - **实时**：WS `notify.new` 直接插入列表顶；`notify.read` 同步已读态；`BottomNavBar` 徽标走 `unread_count` 派生。
 - **点击跳转**：根据 `deep_link` 字段直接路由（白名单校验，防止非法 scheme）。
@@ -2986,8 +2988,8 @@ AI 域包含五种界面产出：
 ### 22.3 MH-AI-01 AI 会话列表
 
 - **路由**：`AiSessionList`
-- **API**：`GET /api/v1/ai/sessions?cursor=…`
-- **项**：会话标题（首轮提问摘要）、更新时间、未读徽标、置顶标记、右滑删除（`DELETE /api/v1/ai/sessions/{id}`）。
+- **API**：**基线未提供会话列表端点**；当前以本地 Room 持久化会话元信息（`session_id` / 首条摘要 / `updated_at`）为准；进入会话时调用 `POST /api/v1/ai/sessions` 创建或续接。
+- **项**：本地缓存的会话标题（首轮提问摘要）、更新时间、未读徽标、置顶标记；删除仅清本地记录（服务端基线未提供 `DELETE /api/v1/ai/sessions/{id}`）。
 - **操作**：【+ 新建会话】 → `POST /api/v1/ai/sessions` → 跳 `AiChat(session_id)`。
 
 ### 22.4 MH-AI-02 AI 对话（LUI 主入口）
@@ -3021,8 +3023,7 @@ AI 域包含五种界面产出：
 
 - **接口**：
   - 发送消息：`POST /api/v1/ai/sessions/{session_id}/messages`（SSE 流式，§11.4）
-  - 续传：`GET /api/v1/ai/sessions/{session_id}/messages?after_cursor=…`
-  - 取消：`POST /api/v1/ai/sessions/{session_id}/messages/{msg_id}/cancel`
+  - 续传 / 取消：**基线未独立列出**；前端通过 SSE 连接自身的重连 / abort 机制处理；重连后若 token 流未完成，由客户端发起新一轮 `POST …/messages`
 
 - **SSE 事件类型**：
 
@@ -3048,7 +3049,7 @@ AI 域包含五种界面产出：
   | **A2 写入（低风险）** | 单按钮【确认执行】 | 新建记忆笔记、标记线索备注 |
   | **A3 写入（高风险）** | 双按钮【确认执行】【取消】 + 二次确认弹窗 | 关闭任务、转移主监护、取消工单 |
 
-- **接口**：`POST /api/v1/ai/intents/{intent_id}/confirm`
+- **接口**：`POST /api/v1/ai/sessions/{session_id}/intents/{intent_id}/confirm`
 
   ```json
   { "decision": "CONFIRM", "version": 7, "override": false }
@@ -3096,7 +3097,7 @@ AI 域包含五种界面产出：
 ### 22.8 MH-AI-06 AI 反馈
 
 - **入口**：`AiChat` 右上 `⋮` → 【反馈本轮回答】。
-- **API**：`POST /api/v1/ai/feedback`
+- **API**：`POST /api/v1/ai/sessions/{session_id}/feedback`
 
   ```json
   { "session_id": "sess_…", "message_id": "msg_…", "rating": "GOOD", "tags": ["准确","有用"], "comment": "…" }
@@ -3128,49 +3129,50 @@ AI 域包含五种界面产出：
 | MH-AUTH-03 | `POST /api/v1/auth/password-reset/request` |
 | MH-AUTH-04 | `POST /api/v1/auth/password-reset/confirm` |
 | MH-AUTH-05 | `PUT /api/v1/users/me/password` |
-| MH-HOME-01 | `GET /api/v1/home/summary` · `GET /api/v1/patients` · `GET /api/v1/rescue/tasks?status=ACTIVE,SUSTAINED` · `GET /api/v1/notifications/inbox?page_size=3` |
-| MH-PAT-01 | `GET /api/v1/patients/{id}/full` |
-| MH-PAT-02 | `POST /api/v1/patients` · `PUT /api/v1/patients/{id}/profile` · `PUT /api/v1/patients/{id}/appearance` · `POST /api/v1/media/upload` |
-| MH-PAT-03 | `PUT /api/v1/patients/{id}/fence` |
-| MH-PAT-04 | `POST /api/v1/patients/{id}/missing-pending/confirm` · `POST /api/v1/patients/{id}/missing-pending/cancel` |
-| MH-GUA-01 | `GET /api/v1/patients/{id}/guardians` · `GET /api/v1/guardians/invitations?patient_id=&status=PENDING` · `GET /api/v1/patients/{id}/primary-transfer/active` |
-| MH-GUA-02 | `POST /api/v1/guardians/invitations` |
-| MH-GUA-03 | `POST /api/v1/guardians/invitations/{id}/accept` · `POST /api/v1/guardians/invitations/{id}/reject` · `POST /api/v1/guardians/invitations/{id}/cancel` |
-| MH-GUA-04 | `POST /api/v1/patients/{id}/primary-transfer` |
-| MH-GUA-05 | `POST /api/v1/patients/{id}/primary-transfer/{tid}/confirm` · `/reject` · `/cancel` |
-| MH-GUA-06 | `DELETE /api/v1/patients/{id}/guardians/{user_id}` |
-| MH-TAG-01 | `GET /api/v1/patients/{id}/tags` |
+| MH-HOME-01 | `GET /api/v1/patients` · `GET /api/v1/rescue/tasks?state=ACTIVE,SUSTAINED` · `GET /api/v1/notifications/inbox?page_size=3`（前端并行聚合；基线未提供 `/home/summary` BFF） |
+| MH-PAT-01 | `GET /api/v1/patients/{patient_id}`（响应内嵌 `guardians[] / appearance / fence / tags[] / pending_invitations[] / active_primary_transfer`） |
+| MH-PAT-02 | `POST /api/v1/patients` · `PUT /api/v1/patients/{patient_id}/profile` · `PUT /api/v1/patients/{patient_id}/appearance`（图片直传见 §14 附件上传，以 BDD 为准） |
+| MH-PAT-03 | `PUT /api/v1/patients/{patient_id}/fence` |
+| MH-PAT-04 | `POST /api/v1/patients/{patient_id}/missing-pending/confirm`（body `action ∈ {CONFIRM_MISSING, CONFIRM_SAFE}`；无独立 cancel 端点） |
+| MH-PAT-05 | `DELETE /api/v1/patients/{patient_id}` |
+| MH-GUA-01 | `GET /api/v1/patients/{patient_id}`（从聚合响应读取 `guardians[]` / `pending_invitations[]` / `active_primary_transfer`） |
+| MH-GUA-02 | `POST /api/v1/patients/{patient_id}/guardians/invitations` |
+| MH-GUA-03 | `POST /api/v1/patients/{patient_id}/guardians/invitations/{invitation_id}/respond`（body `{action: "ACCEPT"｜"REJECT"｜"CANCEL"}`） |
+| MH-GUA-04 | `POST /api/v1/patients/{patient_id}/guardians/primary-transfer` |
+| MH-GUA-05 | `POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/respond`（body `{action: "CONFIRM"｜"REJECT"}`） · `POST /api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/cancel`（发起方撤回） |
+| MH-GUA-06 | `DELETE /api/v1/patients/{patient_id}/guardians/{user_id}` |
+| MH-TAG-01 | 读取 `GET /api/v1/patients/{patient_id}` 响应 `tags[]` |
 | MH-TAG-02 | `POST /api/v1/tags/{tag_code}/bind` |
 | MH-TAG-03 | `POST /api/v1/tags/{tag_code}/loss/confirm` |
+| MH-TASK-00 | `GET /api/v1/rescue/tasks` |
 | MH-TASK-01 | `POST /api/v1/rescue/tasks` |
-| MH-TASK-02 | `GET /api/v1/rescue/tasks/{id}/full` · `POST /api/v1/ws/ticket` |
-| MH-TASK-03 | `POST /api/v1/rescue/tasks/{id}/close` |
-| MH-TASK-04 | `GET /api/v1/rescue/tasks/{id}/trajectory/latest` · `GET /api/v1/rescue/tasks/{id}/trajectory?after_version=` |
-| MH-TASK-05 | `POST /api/v1/rescue/tasks/{id}/sustained` |
-| MH-CLUE-01 | `GET /api/v1/clues/{id}` |
-| MH-CLUE-02 | `POST /api/v1/media/upload` · `POST /api/v1/clues` |
+| MH-TASK-02 | `GET /api/v1/rescue/tasks/{task_id}/full` · `GET /api/v1/rescue/tasks/{task_id}/snapshot`（局部刷新） · `POST /api/v1/ws/ticket` |
+| MH-TASK-03 | `POST /api/v1/rescue/tasks/{task_id}/close` |
+| MH-TASK-04 | `GET /api/v1/rescue/tasks/{task_id}/trajectory/latest`（支持 `?after_version=` 增量拉取） |
+| MH-TASK-05 | `POST /api/v1/rescue/tasks/{task_id}/sustained` |
+| MH-CLUE-01 | `GET /api/v1/clues?task_id={task_id}&clue_id={clue_id}`（基线无单条 GET，用列表接口按 `clue_id` 过滤） |
+| MH-CLUE-02 | `POST /api/v1/clues/report`（登录态家属上报，JWT 注入） |
 | MH-PUB-01 | `GET /r/{resource_token}` |
 | MH-PUB-02 | `POST /api/v1/public/clues/manual-entry` |
-| MH-PUB-03 | `POST /api/v1/clues/report` |
+| MH-PUB-03 | `POST /api/v1/clues/report`（匿名） |
 | MH-PUB-04 | 复用 MH-PUB-01 |
 | MH-PUB-05 | —— |
-| MH-ORD-01 | `GET /api/v1/material/orders?status=&cursor=&page_size=` · `GET /api/v1/material/skus/public` |
-| MH-ORD-02 | `GET /api/v1/material/orders/{id}` |
+| MH-ORD-01 | `GET /api/v1/material/orders?state=&cursor=&page_size=` |
+| MH-ORD-02 | `GET /api/v1/material/orders?order_id={order_id}` |
 | MH-ORD-03 | `POST /api/v1/material/orders` |
-| MH-ORD-04 | `POST /api/v1/material/orders/{id}/receive` · `POST /api/v1/material/orders/{id}/cancel` |
-| MH-NOTI-01 | `GET /api/v1/notifications/inbox` · `POST /api/v1/notifications/{id}/read` · `POST /api/v1/notifications/read-all` |
-| MH-AI-01 | `GET /api/v1/ai/sessions` · `POST /api/v1/ai/sessions` · `DELETE /api/v1/ai/sessions/{id}` |
-| MH-AI-02 | `GET /api/v1/ai/sessions/{id}` · `POST /api/v1/ai/sessions/{id}/messages`（SSE） · `GET /api/v1/ai/sessions/{id}/messages?after_cursor=` · `POST /api/v1/ai/sessions/{id}/messages/{msg_id}/cancel` |
-| MH-AI-03 | `POST /api/v1/ai/intents/{id}/confirm` |
-| MH-AI-04 | `GET /api/v1/ai/memory-notes` · `POST /api/v1/ai/memory-notes` · `PUT /api/v1/ai/memory-notes/{id}` · `DELETE /api/v1/ai/memory-notes/{id}` |
+| MH-ORD-04 | `POST /api/v1/material/orders/{order_id}/receive` · `POST /api/v1/material/orders/{order_id}/cancel` |
+| MH-NOTI-01 | `GET /api/v1/notifications/inbox` · `POST /api/v1/notifications/{notification_id}/read`（基线无批量已读；前端循环调用） |
+| MH-AI-01 | `POST /api/v1/ai/sessions`（创建/续接，session_id 由客户端持久化） |
+| MH-AI-02 | `POST /api/v1/ai/sessions/{session_id}/messages`（SSE 流式） |
+| MH-AI-03 | `POST /api/v1/ai/sessions/{session_id}/intents/{intent_id}/confirm` |
 | MH-AI-05 | `POST /api/v1/ai/poster` |
-| MH-AI-06 | `POST /api/v1/ai/feedback` |
+| MH-AI-06 | `POST /api/v1/ai/sessions/{session_id}/feedback` |
 | MH-ME-01 | `GET /api/v1/users/me` |
-| MH-ME-02 | `PUT /api/v1/users/me` · `POST /api/v1/media/upload` |
+| MH-ME-02 | `GET /api/v1/users/me`（只读；基线未开放 PUT /users/me） |
 | MH-ME-03 | —— |
 | MH-ME-04 | —— |
-| MH-ME-05 | `GET /api/v1/meta/version` |
-| MH-ME-06 | `POST /api/v1/users/me/push-tokens` · `DELETE /api/v1/users/me/push-tokens/{id}` |
+| MH-ME-05 | 本地读取 `BuildConfig.VERSION_NAME` |
+| MH-ME-06 | 以 **BDD §推送接入**为准（基线 API V2.0 未列出 push-tokens 端点，登记为跨文档差距） |
 | MH-ERR-01 | —— |
 
 ### 23.2 矩阵 B：API → 页面
@@ -3180,76 +3182,56 @@ AI 域包含五种界面产出：
 | POST | `/api/v1/auth/register` | MH-AUTH-02 |
 | POST | `/api/v1/auth/login` | MH-AUTH-01 |
 | POST | `/api/v1/auth/token/refresh` | 网络层 `AuthInterceptor`（全局） |
-| POST | `/api/v1/auth/logout` | MH-ME-01 |
 | POST | `/api/v1/auth/password-reset/request` | MH-AUTH-03 |
 | POST | `/api/v1/auth/password-reset/confirm` | MH-AUTH-04 |
-| GET | `/api/v1/users/me` | MH-SPL-01, MH-ME-01 |
-| PUT | `/api/v1/users/me` | MH-ME-02 |
+| GET | `/api/v1/users/me` | MH-SPL-01, MH-ME-01, MH-ME-02 |
 | PUT | `/api/v1/users/me/password` | MH-AUTH-05 |
-| POST | `/api/v1/users/me/push-tokens` | MH-ME-06 |
-| DELETE | `/api/v1/users/me/push-tokens/{id}` | MH-ME-06 |
-| GET | `/api/v1/home/summary` | MH-HOME-01 |
 | GET | `/api/v1/patients` | MH-HOME-01 |
 | POST | `/api/v1/patients` | MH-PAT-02 |
-| GET | `/api/v1/patients/{id}/full` | MH-PAT-01 |
-| PUT | `/api/v1/patients/{id}/profile` | MH-PAT-02 |
-| PUT | `/api/v1/patients/{id}/appearance` | MH-PAT-02 |
-| PUT | `/api/v1/patients/{id}/fence` | MH-PAT-03 |
-| POST | `/api/v1/patients/{id}/missing-pending/confirm` | MH-PAT-04 |
-| POST | `/api/v1/patients/{id}/missing-pending/cancel` | MH-PAT-04 |
-| GET | `/api/v1/patients/{id}/guardians` | MH-GUA-01 |
-| GET | `/api/v1/patients/{id}/tags` | MH-TAG-01 |
-| POST | `/api/v1/patients/{id}/primary-transfer` | MH-GUA-04 |
-| POST | `/api/v1/patients/{id}/primary-transfer/{tid}/confirm` | MH-GUA-05 |
-| POST | `/api/v1/patients/{id}/primary-transfer/{tid}/reject` | MH-GUA-05 |
-| POST | `/api/v1/patients/{id}/primary-transfer/{tid}/cancel` | MH-GUA-05 |
-| GET | `/api/v1/patients/{id}/primary-transfer/active` | MH-GUA-01 |
-| DELETE | `/api/v1/patients/{id}/guardians/{user_id}` | MH-GUA-06 |
-| GET | `/api/v1/guardians/invitations` | MH-GUA-01 |
-| POST | `/api/v1/guardians/invitations` | MH-GUA-02 |
-| POST | `/api/v1/guardians/invitations/{id}/accept` | MH-GUA-03 |
-| POST | `/api/v1/guardians/invitations/{id}/reject` | MH-GUA-03 |
-| POST | `/api/v1/guardians/invitations/{id}/cancel` | MH-GUA-03 |
+| GET | `/api/v1/patients/{patient_id}` | MH-PAT-01, MH-GUA-01, MH-TAG-01 |
+| DELETE | `/api/v1/patients/{patient_id}` | MH-PAT-05 |
+| PUT | `/api/v1/patients/{patient_id}/profile` | MH-PAT-02 |
+| PUT | `/api/v1/patients/{patient_id}/appearance` | MH-PAT-02 |
+| PUT | `/api/v1/patients/{patient_id}/fence` | MH-PAT-03 |
+| POST | `/api/v1/patients/{patient_id}/missing-pending/confirm` | MH-PAT-04 |
+| POST | `/api/v1/patients/{patient_id}/guardians/invitations` | MH-GUA-02 |
+| POST | `/api/v1/patients/{patient_id}/guardians/invitations/{invitation_id}/respond` | MH-GUA-03 |
+| POST | `/api/v1/patients/{patient_id}/guardians/primary-transfer` | MH-GUA-04 |
+| POST | `/api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/respond` | MH-GUA-05 |
+| POST | `/api/v1/patients/{patient_id}/guardians/primary-transfer/{transfer_request_id}/cancel` | MH-GUA-05 |
+| DELETE | `/api/v1/patients/{patient_id}/guardians/{user_id}` | MH-GUA-06 |
 | POST | `/api/v1/tags/{tag_code}/bind` | MH-TAG-02 |
 | POST | `/api/v1/tags/{tag_code}/loss/confirm` | MH-TAG-03 |
+| GET | `/api/v1/rescue/tasks` | MH-TASK-00, MH-HOME-01 |
 | POST | `/api/v1/rescue/tasks` | MH-TASK-01 |
-| GET | `/api/v1/rescue/tasks` | MH-HOME-01 |
-| GET | `/api/v1/rescue/tasks/{id}/full` | MH-TASK-02 |
-| POST | `/api/v1/rescue/tasks/{id}/close` | MH-TASK-03 |
-| POST | `/api/v1/rescue/tasks/{id}/sustained` | MH-TASK-05 |
-| GET | `/api/v1/rescue/tasks/{id}/trajectory/latest` | MH-TASK-04 |
-| GET | `/api/v1/rescue/tasks/{id}/trajectory` | MH-TASK-04 |
-| POST | `/api/v1/clues` | MH-CLUE-02 |
-| GET | `/api/v1/clues/{id}` | MH-CLUE-01 |
-| POST | `/api/v1/clues/report` | MH-PUB-03 |
+| GET | `/api/v1/rescue/tasks/{task_id}/full` | MH-TASK-02 |
+| GET | `/api/v1/rescue/tasks/{task_id}/snapshot` | MH-TASK-02（局部刷新） |
+| POST | `/api/v1/rescue/tasks/{task_id}/close` | MH-TASK-03 |
+| POST | `/api/v1/rescue/tasks/{task_id}/sustained` | MH-TASK-05 |
+| GET | `/api/v1/rescue/tasks/{task_id}/trajectory/latest` | MH-TASK-04 |
+| GET | `/api/v1/clues` | MH-CLUE-01 |
+| POST | `/api/v1/clues/report` | MH-CLUE-02, MH-PUB-03 |
 | GET | `/r/{resource_token}` | MH-PUB-01, MH-PUB-04 |
 | POST | `/api/v1/public/clues/manual-entry` | MH-PUB-02 |
-| GET | `/api/v1/material/orders` | MH-ORD-01 |
+| GET | `/api/v1/material/orders` | MH-ORD-01, MH-ORD-02 |
 | POST | `/api/v1/material/orders` | MH-ORD-03 |
-| GET | `/api/v1/material/orders/{id}` | MH-ORD-02 |
-| POST | `/api/v1/material/orders/{id}/receive` | MH-ORD-04 |
-| POST | `/api/v1/material/orders/{id}/cancel` | MH-ORD-04 |
-| GET | `/api/v1/material/skus/public` | MH-ORD-01, MH-ORD-03 |
+| POST | `/api/v1/material/orders/{order_id}/receive` | MH-ORD-04 |
+| POST | `/api/v1/material/orders/{order_id}/cancel` | MH-ORD-04 |
 | GET | `/api/v1/notifications/inbox` | MH-HOME-01, MH-NOTI-01 |
-| POST | `/api/v1/notifications/{id}/read` | MH-NOTI-01 |
-| POST | `/api/v1/notifications/read-all` | MH-NOTI-01 |
+| POST | `/api/v1/notifications/{notification_id}/read` | MH-NOTI-01 |
 | POST | `/api/v1/ws/ticket` | MH-TASK-02（及所有实时消费页） |
-| GET | `/api/v1/ai/sessions` | MH-AI-01 |
-| POST | `/api/v1/ai/sessions` | MH-AI-01 |
-| GET | `/api/v1/ai/sessions/{id}` | MH-AI-02 |
-| DELETE | `/api/v1/ai/sessions/{id}` | MH-AI-01 |
-| POST | `/api/v1/ai/sessions/{id}/messages` | MH-AI-02 |
-| GET | `/api/v1/ai/sessions/{id}/messages` | MH-AI-02 |
-| POST | `/api/v1/ai/sessions/{id}/messages/{msg_id}/cancel` | MH-AI-02 |
-| POST | `/api/v1/ai/intents/{id}/confirm` | MH-AI-03 |
-| GET | `/api/v1/ai/memory-notes` | MH-AI-04 |
-| POST | `/api/v1/ai/memory-notes` | MH-AI-04 |
-| PUT | `/api/v1/ai/memory-notes/{id}` | MH-AI-04 |
-| DELETE | `/api/v1/ai/memory-notes/{id}` | MH-AI-04 |
+| POST | `/api/v1/ai/sessions` | MH-AI-01, MH-AI-02 |
+| POST | `/api/v1/ai/sessions/{session_id}/messages` | MH-AI-02 |
+| POST | `/api/v1/ai/sessions/{session_id}/intents/{intent_id}/confirm` | MH-AI-03 |
+| POST | `/api/v1/ai/sessions/{session_id}/feedback` | MH-AI-06 |
 | POST | `/api/v1/ai/poster` | MH-AI-05 |
-| POST | `/api/v1/ai/feedback` | MH-AI-06 |
-| POST | `/api/v1/media/upload` | MH-PAT-02, MH-CLUE-02, MH-ME-02 |
-| GET | `/api/v1/meta/version` | MH-ME-05 |
+
+> **跨文档差距（登记给 API V2.1 补齐）**：
+> - `POST /api/v1/media/upload`（或 presigned URL 接口）：患者头像 / 线索附件上传所需，基线 API V2.0 未单列；当前以 **BDD §附件上传** 为准；
+> - `POST /api/v1/users/me/push-tokens` / `DELETE /api/v1/users/me/push-tokens/{id}`：FCM / 华为 / 小米推送 token 注册所需，基线未列出；
+> - `GET /api/v1/ai/sessions`、`GET /api/v1/ai/sessions/{id}`、`DELETE /api/v1/ai/sessions/{id}`、`GET /api/v1/ai/sessions/{id}/messages`、`POST …/messages/{msg_id}/cancel`：AI 会话历史列表 / 取消能力，基线未列出；本手册当前以本地持久化 + session_id 承载历史；
+> - `GET /api/v1/meta/version`：强升/版本守门；改为本地读取 `BuildConfig.VERSION_NAME` + `GET /api/v1/admin/configs` 中的 `min_client_version` 阈值比对；
+> - 批量已读 `POST /api/v1/notifications/read-all`：基线未列出，前端循环调用单条 `/read` 端点替代。
 
 ### 23.3 管理员专属接口（显式排除）
 
